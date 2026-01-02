@@ -46,16 +46,24 @@ def normalize_ticker(user_input):
     return user_input.split()[0].upper().strip()
 
 def fetch_market_data(ticker):
-    """Fetches both Stock Price and Treasury Yield (Risk Free Rate)."""
+    """Fetches Stock Price, Name, and Treasury Yield."""
     clean_ticker = normalize_ticker(ticker)
     data_pkg = {"price": None, "yield": None, "is_valid_ticker": False, "name": ticker}
     
     try:
-        # Fetch Stock Price
-        stock_data = yf.Ticker(clean_ticker).history(period="5d")
-        if not stock_data.empty:
-            data_pkg["price"] = stock_data['Close'].iloc[-1]
+        # Fetch Stock Data
+        stock = yf.Ticker(clean_ticker)
+        hist = stock.history(period="5d")
+        
+        if not hist.empty:
+            data_pkg["price"] = hist['Close'].iloc[-1]
             data_pkg["is_valid_ticker"] = True
+            # Get Company Name
+            try:
+                info = stock.info
+                data_pkg["name"] = info.get('longName', clean_ticker)
+            except:
+                data_pkg["name"] = clean_ticker
         
         # Always fetch Treasury Yield for macro context
         treasury_data = yf.Ticker("^TNX").history(period="5d")
@@ -480,39 +488,36 @@ def verify_and_correct_targets(chart_data, current_price):
 def extract_return_data(text):
     return None
 
-# --- 6. AGENT ENGINE ---
+# --- 6. AGENT ENGINE (With Retries) ---
 async def run_agent(name, prompt, content):
     await asyncio.sleep(random.uniform(0.5, 2.0))
     
-    # Robust Retry Loop (3 Attempts per agent)
+    # Retry Loop (3 attempts)
     for attempt in range(3):
         for model_name in MODELS:
             try:
-                # Use new SDK syntax for generate_content
                 response = await client.aio.models.generate_content(
                     model=model_name,
                     contents=f"{prompt}\nCONTEXT: {content}",
                     config=types.GenerateContentConfig(temperature=0.2, safety_settings=[
-                        types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_ONLY_HIGH"),
-                        types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_ONLY_HIGH"),
-                        types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_ONLY_HIGH"),
-                        types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_ONLY_HIGH")
+                        types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),
+                        types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"),
+                        types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_NONE"),
+                        types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE")
                     ])
                 )
                 if response.text: return name, response.text
             except Exception as e:
-                # Log error if needed, wait and retry
-                if "429" in str(e):
-                    # Rate limit hit, wait longer
-                    await asyncio.sleep(20 * (attempt + 1))
+                error_msg = str(e)
+                if "429" in error_msg:
+                    await asyncio.sleep(10 * (attempt + 1))
                 else:
                     await asyncio.sleep(5)
-                continue # Try next model or next attempt
-
-    return name, f"Analysis Failed for {name}."
+                continue # Retry loop
+                
+    return name, f"Analysis Failed for {name}. Error: {error_msg}"
 
 async def run_analysis(user_input):
-    # 1. Determine Subject & Context
     market_data = fetch_market_data(user_input)
     is_ticker = market_data["is_valid_ticker"]
     
@@ -521,11 +526,10 @@ async def run_analysis(user_input):
         current_price = market_data["price"]
         current_yield = market_data["yield"]
     else:
-        subject = user_input # Use full question
+        subject = user_input
         current_price = None
         current_yield = market_data["yield"]
         
-    # 2. GENERATE PROMPTS
     prompts = get_dynamic_prompts(subject, current_price, current_yield, is_ticker)
     
     tasks = [
