@@ -36,7 +36,7 @@ MODELS = [
     "gemini-3-pro-preview"
 ]
 
-# --- 2. DYNAMIC PROMPT GENERATION (TITAN V3 PROTOCOLS) ---
+# --- 2. DYNAMIC PROMPT GENERATION ---
 
 def normalize_ticker(user_input):
     match = re.search(r'\b[A-Z]{1,5}\b', user_input)
@@ -46,16 +46,24 @@ def normalize_ticker(user_input):
     return user_input.split()[0].upper().strip()
 
 def fetch_market_data(ticker):
-    """Fetches both Stock Price and Treasury Yield (Risk Free Rate)."""
+    """Fetches Stock Price, Name, and Treasury Yield."""
     clean_ticker = normalize_ticker(ticker)
     data_pkg = {"price": None, "yield": None, "is_valid_ticker": False, "name": ticker}
     
     try:
-        # Fetch Stock Price
-        stock_data = yf.Ticker(clean_ticker).history(period="5d")
-        if not stock_data.empty:
-            data_pkg["price"] = stock_data['Close'].iloc[-1]
+        # Fetch Stock Data
+        stock = yf.Ticker(clean_ticker)
+        hist = stock.history(period="5d")
+        
+        if not hist.empty:
+            data_pkg["price"] = hist['Close'].iloc[-1]
             data_pkg["is_valid_ticker"] = True
+            # Get Company Name
+            try:
+                info = stock.info
+                data_pkg["name"] = info.get('longName', clean_ticker)
+            except:
+                data_pkg["name"] = clean_ticker
         
         # Always fetch Treasury Yield for macro context
         treasury_data = yf.Ticker("^TNX").history(period="5d")
@@ -97,37 +105,29 @@ def get_dynamic_prompts(subject, current_price=None, current_yield=None, is_tick
     You are the Macro Council (Voices: Ray Dalio, Stanley Druckenmiller).
     {price_context}
     
-    FRAMEWORK: Step-Back Prompting + Tree of Thoughts.
-    
     TASK: Analyze the global macro environment regarding: {subject}.
-    1. **Step-Back Prompting:** First, identify the abstract economic principle governing the current era (e.g., "Debt Supercycle Deleveraging").
-    2. **Tree of Thoughts:** Branch into three scenarios: Inflation Resurgence, Soft Landing, Deflationary Bust.
-    3. **Macro Drag:** Weigh the probability of each to determine specific headwinds (e.g., -15% discount due to rising cost of capital).
+    1. **Step-Back Prompting:** Identify the abstract economic principle governing the current era.
+    2. **Tree of Thoughts:** Analyze 3 scenarios: Inflation Resurgence, Soft Landing, Deflationary Bust.
+    3. **Macro Drag:** Identify specific headwinds/tailwinds.
     
     OUTPUT FORMAT (Markdown):
     - ## Executive Summary
     - ### Key Indicators (Table)
-    - ### Scenario Analysis (Bull/Bear/Base)
+    - ### Scenario Analysis
     """
 
     prompts["FUNDAMENTAL"] = f"""
-    You are the Fundamental Specialist (Voices: Peter Lynch, Warren Buffett, Michael Porter).
+    You are the Fundamental Specialist (Voices: Peter Lynch, Warren Buffett).
     {price_context}
-    
-    FRAMEWORK: ReAct (Reason+Act) + Unit Economics Deep-Dive.
     
     TASK: Analyze the fundamentals of: {subject}.
     {sec_instruction}
     
-    THOUGHT PROCESS:
-    - "Top-line growth looks good, but is the quality deteriorating?"
-    - Check if CAC is rising faster than LTV (Destructive Growth).
-    
     REQUIRED ANALYSES:
-    1. **Unit Economics Check:** Sector-specific efficiency (e.g., Same-Store Sales, Load Factor).
+    1. **Unit Economics:** LTV/CAC, Same-Store Sales, Margins.
     2. **Moat Analysis:** Porter's 5 Forces.
-    3. **Capital Allocation Scorecard:** Analyze management's history of Buybacks vs. Dividends vs. Acquisitions.
-    4. **Executive Compensation Audit:** Analyze the Proxy Statement. Is pay tied to EPS (bad) or ROIC (good)?
+    3. **Capital Allocation:** Buybacks vs. Empire Building.
+    4. **Executive Compensation:** Is pay tied to EPS (bad) or ROIC (good)?
     
     OUTPUT FORMAT (Markdown):
     - ## Fundamental Analysis
@@ -137,70 +137,57 @@ def get_dynamic_prompts(subject, current_price=None, current_yield=None, is_tick
     """
 
     prompts["CFA"] = f"""
-    You are a CFA Charterholder and Senior Credit Analyst.
+    You are a CFA Charterholder.
     {price_context}
     
-    TASK: Conduct a professional forensic review of the MD&A section for: {subject}.
-    FRAMEWORK: Strict Credit Analyst Standard. Do not summarize; identify red flags.
-    
-    ANALYSIS REQUIREMENTS:
-    1. **Margin Analysis:** Volume vs. Price drivers? Pricing power or volume declines?
-    2. **Non-GAAP Reconciliations:** Highlight the gap between Adjusted EBITDA and Net Income (Quality of Earnings).
-    3. **Liquidity:** Cash burn, debt covenants, and capital constraints.
-    4. **Language Change:** Did tone shift from confident to cautious?
+    TASK: Conduct a professional credit/financial analysis of: {subject}.
+    Focus on Risks, Margins, Liquidity, and Quality of Earnings/Data.
     
     OUTPUT FORMAT (Markdown):
-    - ## CFA Analysis: MD&A Review
+    - ## CFA Analysis
     - **Key Insights:** [Details]
     - **Risk Factors:** [Details]
     """
 
     prompts["QUANT"] = f"""
-    You are the Quant Desk (Voices: Jim Simons, Nassim Taleb).
+    You are the Quant Desk (Voices: Jim Simons).
     {price_context}
-    
-    FRAMEWORK: Program-Aided Language (PAL). Do not "guess" math.
     
     TASK: Analyze valuation, risk, and sensitivity for: {subject}.
     {val_instruction}
     
     REQUIRED CALCULATIONS:
-    1. **Valuation Risk:** Compare P/E, PEG to historical averages.
-    2. **Stochastic DCF:** Mental Monte Carlo simulation (10k iterations). Report 5th, 50th, 95th percentiles.
-    3. **Kelly Criterion:** Position sizing based on edge (Constraint: Use Half-Kelly for safety).
-    4. **Sensitivity Analysis:** How does price change if WACC increases by 1%?
+    1. **Valuation:** Compare P/E, PEG to historicals.
+    2. **Stochastic DCF:** Mental Monte Carlo simulation (10k iterations).
+    3. **Kelly Criterion:** Position sizing based on edge (Half-Kelly).
+    4. **Beneish M-Score:** Check for earnings manipulation flags.
     
     If this is a specific stock, output:
     1. **Markdown Table**: Valuation Metrics (P/E, PEG, FCF Yield, Beneish M-Score).
     2. **CHART DATA**: JSON block for Price Targets: {{"Bear": 100, "Base": 150, "Bull": 200}}
-       (Targets MUST reflect the live price of ${current_price if current_price else 'N/A'}).
     """
 
     prompts["RED_TEAM"] = f"""
-    You are the Red Team (Voice: Jim Chanos, Gary Klein).
+    You are the Red Team (Voice: Jim Chanos).
     {price_context}
-    
-    FRAMEWORK: Forward-Backward Reasoning + Pre-Mortem.
     
     TASK: Find fatal flaws, contradictions, and "Grey Rhino" risks in the bullish case for: {subject}.
     
     RISK PROTOCOLS:
-    1. **Backward Check:** Reverse-engineer the current price. To justify ${current_price if current_price else 'X'}, what growth is required? Is it realistic?
-    2. **The Grey Rhino:** Identify high-probability, high-impact threats everyone is ignoring (e.g., Debt Maturity Walls).
+    1. **Backward Check:** Reverse-engineer the price. Is implied growth realistic?
+    2. **The Grey Rhino:** Obvious, high-impact threats ignored by the market.
     3. **Pre-Mortem:** Assume it is 2030 and the company has failed. Write the obituary explaining exactly why.
-    4. **SEC Forensics:** Check "Legal Proceedings" and "Related Party Transactions".
+    4. **SEC Forensics:** Check "Legal Proceedings" for hidden risks.
     
     OUTPUT FORMAT (Markdown):
     - ## Key Investment Risks
     - ### The Bear Case
-    - ### Pre-Mortem (The 2030 Obituary)
+    - ### Pre-Mortem
     """
 
     prompts["PORTFOLIO"] = f"""
-    You are the CIO (The Chair).
+    You are the CIO.
     {price_context}
-    
-    FRAMEWORK: Chain of Density + Sell Discipline.
     
     TASK: Synthesize final thesis for: {subject}.
     
@@ -209,10 +196,9 @@ def get_dynamic_prompts(subject, current_price=None, current_yield=None, is_tick
     
     OUTPUT FORMAT (Markdown):
     - ## Executive Thesis (Chain of Density)
-      (Iterative summary maximizing information per word).
-    - ### Variant Perception (Consensus vs Our View)
-    - ### Sell Triggers (3 Hard Rules)
-    - ### Final Verdict (Buy/Sell/Hold & Allocation)
+    - ### Variant Perception
+    - ### Sell Triggers
+    - ### Final Verdict
     """
     
     return prompts
@@ -467,8 +453,13 @@ def fetch_relative_returns(ticker, benchmark="SPY"):
         tickers = [clean_ticker, benchmark]
         data = yf.download(tickers, period="5y", progress=False)['Close']
         if data is None or data.empty: return None
+        
+        # Ensure numeric type for safe plotting/math
+        data = data.apply(pd.to_numeric, errors='coerce')
+        
         aligned_data = data.dropna()
         if aligned_data.empty: return None
+        
         normalized = (aligned_data / aligned_data.iloc[0]) - 1
         return normalized
     except: return None
@@ -485,12 +476,15 @@ def extract_chart_data(text):
     return None
 
 def verify_and_correct_targets(chart_data, current_price):
-    if not chart_data or not current_price: return chart_data
-    bull_target = chart_data.get("Bull", 0)
-    if bull_target < current_price:
-        chart_data["Bear"] = round(current_price * 0.80, 2)
-        chart_data["Base"] = round(current_price * 1.10, 2)
-        chart_data["Bull"] = round(current_price * 1.30, 2)
+    if not chart_data or current_price is None: return chart_data
+    try:
+        current_price_val = float(current_price) 
+        bull_target = float(chart_data.get("Bull", 0))
+        if bull_target < current_price_val:
+            chart_data["Bear"] = round(current_price_val * 0.80, 2)
+            chart_data["Base"] = round(current_price_val * 1.10, 2)
+            chart_data["Bull"] = round(current_price_val * 1.30, 2)
+    except: pass
     return chart_data
 
 def extract_return_data(text):
@@ -501,6 +495,7 @@ async def run_agent(name, prompt, content):
     await asyncio.sleep(random.uniform(0.5, 2.0))
     for model_name in MODELS:
         try:
+            # Use new SDK syntax for generate_content
             response = await client.aio.models.generate_content(
                 model=model_name,
                 contents=f"{prompt}\nCONTEXT: {content}",
@@ -527,7 +522,7 @@ async def run_analysis(user_input):
         current_price = market_data["price"]
         current_yield = market_data["yield"]
     else:
-        subject = user_input # Use full question
+        subject = user_input 
         current_price = None
         current_yield = market_data["yield"]
         
