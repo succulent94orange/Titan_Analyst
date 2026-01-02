@@ -7,10 +7,12 @@ import random
 import json
 import re
 import time
+from datetime import datetime, timedelta
 import pandas as pd
 import matplotlib
 import matplotlib.pyplot as plt
 import tempfile
+import yfinance as yf
 import markdown
 from xhtml2pdf import pisa
 from io import BytesIO
@@ -40,283 +42,282 @@ SAFETY_SETTINGS = [
     {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
 ]
 
-# --- 2. PROMPT DEFINITIONS (TITAN V3) ---
-MACRO_PROMPT = """
-You are the Macro Council (Voices: Ray Dalio, Stanley Druckenmiller).
-FRAMEWORK: Step-Back Prompting + Tree of Thoughts.
+# --- 2. DYNAMIC PROMPT GENERATION ---
 
-TASK: Analyze the global macro environment for the target asset.
-1. "Step Back" and identify the abstract economic principle governing the current era.
-2. Apply Tree of Thoughts (ToT) to branch into three scenarios: Inflation Resurgence, Soft Landing, Deflationary Bust.
-3. Identify "Macro Drag": Specific headwinds for the specific sector.
+def get_dynamic_prompts(ticker):
+    """Generates prompts with dynamic dates to ensure analysis is current."""
+    now = datetime.now()
+    current_date_str = now.strftime("%Y-%m-%d")
+    start_date_str = (now - timedelta(days=5*365)).strftime("%Y-%m-%d")
+    current_year = now.year
+    
+    # Fiscal Year Logic: If we are in Jan/Feb, the last full FY is usually 2 years ago in calendar terms until filing.
+    # But for search, we just ask for the "Latest Available".
+    
+    prompts = {}
 
-OUTPUT FORMAT:
-- Executive Summary (Text)
-- **Markdown Table**: Key Indicators (Inflation, Rates, GDP)
-- Scenario Probabilities (Bull/Bear/Base)
-"""
+    prompts["MACRO"] = f"""
+    You are the Macro Council.
+    TASK: Analyze the global macro environment for {ticker} as of {current_date_str}.
+    1. Identify the current economic regime (e.g., Inflationary, Stagflation, Growth).
+    2. Analyze 3 scenarios (Bull/Bear/Base) for the next 12-24 months.
+    OUTPUT FORMAT (Markdown):
+    - ## Executive Summary
+    - ### Key Indicators (Table)
+    - ### Scenario Analysis
+    """
 
-FUNDAMENTAL_PROMPT = """
-You are the Fundamental Specialist (Voices: Peter Lynch, Warren Buffett, Michael Porter).
-FRAMEWORK: ReAct (Reason+Act) + Unit Economics Deep-Dive.
+    prompts["FUNDAMENTAL"] = f"""
+    You are the Fundamental Specialist.
+    TASK: Analyze {ticker}'s business health using the latest SEC filings available before {current_date_str}.
+    **SEC EDGAR PROTOCOL:**
+    1. Simulate accessing SEC.gov. Look for the latest 10-K and 10-Q filed closest to {current_date_str}.
+    2. Analyze Item 1A (Risk Factors) and Item 7 (MD&A).
+    OUTPUT FORMAT (Markdown):
+    - ## Business Health Analysis
+    - ### Unit Economics (Table)
+    - ### Moat Analysis
+    """
 
-TASK: Analyze the business health, revenue quality, and moat.
+    prompts["CFA"] = f"""
+    You are a CFA Charterholder.
+    TASK: Forensic review of {ticker}'s MD&A section from the latest filings ({current_year} or {current_year-1}).
+    Check for: Margin trends, Non-GAAP vs GAAP gaps, and Liquidity constraints.
+    OUTPUT FORMAT (Markdown):
+    - ## CFA Analysis: MD&A Review
+    - **Margin Analysis:** [Details]
+    - **Non-GAAP Reconciliations:** [Details]
+    - **Liquidity:** [Details]
+    """
 
-**SEC EDGAR PROTOCOL (MANDATORY):**
-1. You must simulate accessing [https://www.sec.gov/edgar/search/](https://www.sec.gov/edgar/search/)
-2. Locate the latest **10-K** and **10-Q**.
-3. Specifically analyze **Item 1A. Risk Factors** and **Item 7. MD&A**.
+    prompts["QUANT"] = f"""
+    You are the Quant Desk.
+    TASK: Analyze valuation and risk for {ticker} as of {current_date_str}.
+    CRITICAL OUTPUT:
+    1. **Markdown Table**: Valuation Metrics (P/E, PEG, FCF Yield).
+    2. **CHART DATA**: Output a JSON block at the very end for 12-month Price Targets.
+       Format: {{"Bear": 100, "Base": 150, "Bull": 200}}
+    """
 
-**DEEP DIVE TASKS:**
-1. **Unit Economics Check:** Analyze LTV/CAC, Same-Store Sales, or relevant efficiency metrics.
-2. **Moat Analysis (Porter):** Analyze Supplier Power, Buyer Power, and Threat of Substitutes.
-3. **Capital Allocation Scorecard:** Grade management on Buybacks vs. Empire Building.
-4. **Executive Compensation Audit:** Analyze the Proxy Statement. Are executives paid on EPS (Risk of Manipulation) or ROIC/Free Cash Flow (Shareholder Alignment)?
+    prompts["RED_TEAM"] = f"""
+    You are the Red Team.
+    TASK: Review the reports for {ticker}. Identify fatal flaws and "Grey Rhino" risks as of {current_date_str}.
+    OUTPUT FORMAT (Markdown):
+    - ## Key Investment Risks
+    - ### The Short Case
+    - ### Pre-Mortem
+    """
 
-OUTPUT FORMAT:
-- Business Health Analysis (citing 10-K findings)
-- **Markdown Table**: Unit Economics & KPIs
-- Moat Analysis & Management Scorecard
-"""
-
-QUANT_PROMPT = """
-You are the Quant Desk (Voices: Jim Simons, Nassim Taleb).
-FRAMEWORK: Program-Aided Language (PAL) logic.
-
-TASK: Analyze valuation, risk, and sensitivity.
-
-**QUANT TASKS:**
-1. **Valuation Risk:** Is the stock priced for perfection? (Compare P/E to Historical Average).
-2. **Factor Exposure:** Is the asset driven by Quality, Momentum, or Value factors?
-3. **Sensitivity Analysis:** How does price change if WACC increases by 1%?
-4. **Stochastic DCF:** Perform a mental Monte Carlo simulation (10k iterations) for 5th/95th percentile outcomes.
-
-**CRITICAL OUTPUT:**
-1. **Markdown Table**: Valuation Metrics (P/E, PEG, FCF Yield).
-2. **CHART DATA** (Price Targets). Output a JSON block at the end (Do not use Markdown blocks):
-   {"Bear": 100, "Base": 150, "Bull": 200}
-3. **RETURN DATA** (5-Year Comparison vs SPY). Output a JSON block at the end (Do not use Markdown blocks):
-   {"Years": ["2020", "2021", "2022", "2023", "2024"], "Ticker": [10, 20, -5, 15, 30], "SPY": [15, 25, -18, 24, 12]}
-"""
-
-RED_TEAM_PROMPT = """
-You are the Red Team (Voice: Jim Chanos, Gary Klein).
-FRAMEWORK: Bayesian Network Synthesis + Pre-Mortem + Forward-Backward Reasoning.
-
-TASK: Review the reports below. Find contradictions, hallucinations, and fatal risks.
-
-**RISK PROTOCOLS:**
-1. **Backward Check:** Take the current stock price and reverse-engineer the required growth. Is it realistic?
-2. **The Grey Rhino:** Identify high-probability, high-impact threats everyone is ignoring (e.g., Debt Maturity Walls).
-3. **Pre-Mortem:** Assume the investment failed 3 years from now. Write the obituary.
-4. **SEC Forensics:** Check "Legal Proceedings" and "Related Party Transactions" for red flags.
-"""
-
-PORTFOLIO_PROMPT = """
-You are the CIO (The Chair).
-FRAMEWORK: Chain of Density + Sell Discipline.
-
-TASK: Synthesize the Red Team's verdict into a final Executive Thesis.
-
-**CIO TASKS:**
-1. **Generate Executive Thesis:** Use Chain of Density to maximize information per word.
-2. **Variant Perception:** Explicitly state how your view differs from Consensus.
-3. **Sell Triggers:** Define 3 hard rules for selling this position (e.g., "If ROIC drops below 15%").
-4. **Historical Audit:** Briefly mention if this model would have failed in the last crisis (2020/2022) based on current logic.
-"""
+    prompts["PORTFOLIO"] = f"""
+    You are the CIO.
+    TASK: Synthesize a final Investment Thesis for {ticker} based on the reports.
+    OUTPUT FORMAT (Markdown):
+    - ## Executive Thesis
+    - ### Variant Perception
+    - ### Sell Triggers
+    - ### Final Verdict
+    """
+    
+    return prompts
 
 FOLLOWUP_PROMPT = """
 You are a Research Assistant. Answer user questions based ONLY on the provided report context.
 """
 
-# --- 3. GRAPHIC DESIGN ENGINE (Titan Professional PDF - HTML/CSS) ---
+# --- 3. GRAPHIC DESIGN ENGINE (HTML/CSS -> PDF) ---
+
+# Titan Color Palette (CSS Hex)
+COLOR_NAVY = "#0A1932"
+COLOR_GOLD = "#DAA520"
+COLOR_LIGHT_BLUE = "#EBF0F5"
+COLOR_DARK_GREY = "#323232"
+
+STYLE_CSS = f"""
+    @page {{
+        size: letter;
+        margin: 2cm;
+        @frame header_frame {{
+            -pdf-frame-content: header_content;
+            left: 50pt; width: 512pt; top: 30pt; height: 40pt;
+        }}
+        @frame footer_frame {{
+            -pdf-frame-content: footer_content;
+            left: 50pt; width: 512pt; top: 750pt; height: 20pt;
+        }}
+    }}
+    body {{
+        font-family: 'Times New Roman', Times, serif;
+        font-size: 11pt;
+        line-height: 1.6;
+        color: {COLOR_DARK_GREY};
+    }}
+    h1 {{
+        color: {COLOR_NAVY};
+        font-size: 24pt;
+        font-weight: bold;
+        text-align: center;
+        margin-bottom: 5px;
+        text-transform: uppercase;
+    }}
+    h2 {{
+        color: {COLOR_NAVY};
+        font-size: 16pt;
+        border-bottom: 2px solid {COLOR_GOLD};
+        padding-bottom: 5px;
+        margin-top: 30px;
+        text-transform: uppercase;
+        font-weight: bold;
+    }}
+    h3 {{
+        color: {COLOR_NAVY};
+        font-size: 13pt;
+        margin-top: 20px;
+        font-weight: bold;
+    }}
+    /* Blockquote for Personas */
+    blockquote {{
+        background-color: #f9f9f9;
+        border-left: 5px solid {COLOR_NAVY};
+        margin: 1.5em 10px;
+        padding: 0.5em 10px;
+        font-style: italic;
+        color: #555;
+    }}
+    /* Table Styling */
+    table {{
+        width: 100%;
+        border-collapse: collapse;
+        margin: 20px 0;
+        font-size: 10pt;
+        border: 1px solid #ddd;
+    }}
+    th {{
+        background-color: {COLOR_NAVY};
+        color: {COLOR_GOLD};
+        font-weight: bold;
+        padding: 8px;
+        text-align: center;
+        border: 1px solid #ddd;
+    }}
+    td {{
+        padding: 8px;
+        border: 1px solid #ddd;
+        text-align: right;
+    }}
+    td:first-child {{
+        text-align: left;
+    }}
+    tr:nth-child(even) {{
+        background-color: {COLOR_LIGHT_BLUE};
+    }}
+    .executive-box {{
+        background-color: #F4F7FA;
+        border: 1px solid {COLOR_NAVY};
+        padding: 15px;
+        margin-bottom: 20px;
+    }}
+    .executive-title {{
+        color: {COLOR_GOLD};
+        font-weight: bold;
+        font-size: 14pt;
+        margin-bottom: 10px;
+        display: block;
+    }}
+    .disclaimer {{
+        font-size: 8pt;
+        color: #888;
+        margin-top: 50px;
+        border-top: 1px solid #ccc;
+        padding-top: 10px;
+    }}
+    .chart-container {{
+        text-align: center;
+        margin: 20px 0;
+    }}
+    img {{
+        max-width: 100%;
+        height: auto;
+    }}
+"""
 
 def generate_pdf_report(ticker, report_data, chart_path=None, return_path=None, return_df=None):
-    # 1. Clean JSON artifacts from Quant text so they don't print as raw text
+    # 1. Clean Quant Data (Remove Raw JSON)
     quant_text = report_data.get("Quant", "N/A")
-    # Remove Price Targets JSON block
-    quant_text = re.sub(r'(\*\*CHART DATA\*\*.*?)?\{.*?"Bear".*?"Bull".*?\}', '', quant_text, flags=re.DOTALL | re.IGNORECASE)
-    # Remove Return Data JSON block
-    quant_text = re.sub(r'(\*\*RETURN DATA\*\*.*?)?\{.*?"Years".*?"SPY".*?\}', '', quant_text, flags=re.DOTALL | re.IGNORECASE)
-    # Clean up leftover markdown formatting
+    quant_text = re.sub(r'\{.*?"Bear".*?"Bull".*?\}', '', quant_text, flags=re.DOTALL | re.IGNORECASE)
     quant_text = re.sub(r'```json', '', quant_text)
     quant_text = re.sub(r'```', '', quant_text)
 
-    # 2. Prepare HTML Content
-    pm_html = markdown.markdown(report_data.get("Portfolio Manager", "N/A"), extensions=['tables'])
-    macro_html = markdown.markdown(report_data.get("Macro", "N/A"), extensions=['tables'])
-    fund_html = markdown.markdown(report_data.get("Fundamental", "N/A"), extensions=['tables'])
-    quant_html = markdown.markdown(quant_text, extensions=['tables'])
-    red_html = markdown.markdown(report_data.get("Red Team", "N/A"), extensions=['tables'])
+    # 2. Convert Markdown to HTML
+    sections_html = ""
     
-    # Prepare Images HTML
-    chart_html = ""
-    if chart_path:
-        chart_html += f'<div class="chart-container"><h3>Valuation Scenarios (12-Month Targets)</h3><img src="{chart_path}" style="width: 15cm;" /></div>'
+    # Portfolio Manager (Executive Box)
+    pm_md = report_data.get("Portfolio Manager", "N/A")
+    pm_html = markdown.markdown(pm_md, extensions=['tables', 'fenced_code'])
+    sections_html += f"""
+    <div class="executive-box">
+        <span class="executive-title">1. EXECUTIVE THESIS</span>
+        {pm_html}
+    </div>
+    """
     
-    if return_path:
-        chart_html += f'<div class="chart-container"><h3>5-Year Total Return Comparison (Growth of $10k)</h3><img src="{return_path}" style="width: 15cm;" /></div>'
+    # Standard Sections
+    section_map = [
+        ("2. MACRO-ECONOMIC LANDSCAPE", "Macro"),
+        ("3. FUNDAMENTAL DEEP DIVE", "Fundamental"),
+        ("4. CFA ANALYSIS: MD&A REVIEW", "CFA"),
+        ("5. QUANTITATIVE & RISK ANALYSIS", "Quant", quant_text),
+        ("6. KEY RISKS (RED TEAM VERDICT)", "Red Team")
+    ]
+    
+    for title, key, *rest in section_map:
+        text_content = rest[0] if rest else report_data.get(key, "N/A")
+        html_content = markdown.markdown(text_content, extensions=['tables', 'fenced_code'])
+        sections_html += f"<h2>{title}</h2>{html_content}"
         
-    # Prepare Data Table HTML
-    table_html = ""
-    if return_df is not None:
-        # Convert DataFrame to HTML table with specific styling class
-        table_html = f"<h3>Historical Return Data</h3>{return_df.reset_index().to_html(index=False, classes='titan-table')}"
+        # Inject Charts into Quant Section
+        if key == "Quant":
+            if chart_path:
+                sections_html += f'<div class="chart-container"><h3>Valuation Scenarios (12-Month Targets)</h3><img src="{chart_path}" style="width: 15cm;" /></div>'
+            if return_path:
+                sections_html += f'<div class="chart-container"><h3>5-Year Total Return Comparison (Growth of $10k)</h3><img src="{return_path}" style="width: 15cm;" /></div>'
 
-    # 3. Construct Full HTML Document with CSS
-    html_template = f"""
+    # 3. Assemble Full HTML
+    full_html = f"""
     <!DOCTYPE html>
     <html>
     <head>
         <title>Titan Analyst Report - {ticker}</title>
-        <style>
-            @page {{
-                size: letter;
-                margin: 2.5cm;
-                @frame header_frame {{           /* Static Frame */
-                    -pdf-frame-content: header_content;
-                    left: 20pt; width: 572pt; top: 20pt; height: 40pt;
-                }}
-                @frame footer_frame {{           /* Static Frame */
-                    -pdf-frame-content: footer_content;
-                    left: 20pt; width: 572pt; top: 750pt; height: 20pt;
-                }}
-            }}
-            
-            body {{
-                font-family: Helvetica, sans-serif;
-                font-size: 11pt;
-                line-height: 1.5;
-                color: #333333;
-            }}
-            h1 {{
-                color: #0A1932; /* Navy */
-                font-size: 26pt;
-                text-align: center;
-                margin-top: 0;
-                margin-bottom: 5px;
-            }}
-            .subtitle {{
-                color: #DAA520; /* Gold */
-                font-size: 14pt;
-                text-align: center;
-                font-weight: bold;
-                margin-bottom: 20px;
-            }}
-            .date {{
-                text-align: center;
-                font-size: 12pt;
-                margin-bottom: 40px;
-                color: #555;
-            }}
-            h2 {{
-                color: #0A1932; /* Navy */
-                font-size: 16pt;
-                border-bottom: 2px solid #DAA520; /* Gold Underline */
-                padding-bottom: 5px;
-                margin-top: 30px;
-                background-color: #EBF0F5;
-                padding: 5px;
-            }}
-            h3 {{
-                color: #0A1932;
-                font-size: 13pt;
-                margin-top: 20px;
-            }}
-            
-            /* Executive Box Style */
-            .executive-box {{
-                background-color: #F4F7FA;
-                border: 1px solid #0A1932;
-                padding: 15px;
-                margin-bottom: 20px;
-            }}
-            .executive-title {{
-                color: #DAA520;
-                font-weight: bold;
-                font-size: 14pt;
-                margin-bottom: 10px;
-                display: block;
-            }}
-            
-            /* Table Styling */
-            table {{
-                width: 100%;
-                border-collapse: collapse;
-                margin-bottom: 20px;
-                font-size: 10pt;
-                border: 1pt solid #dddddd;
-            }}
-            th {{
-                background-color: #0A1932;
-                color: #DAA520; /* Gold Text */
-                font-weight: bold;
-                text-align: center;
-                padding: 8px;
-            }}
-            td {{
-                padding: 8px;
-                border-bottom: 1pt solid #dddddd;
-            }}
-            /* Specific class for Pandas tables if needed */
-            .titan-table th {{ background-color: #0A1932; color: #DAA520; }}
-            
-            .disclaimer {{
-                font-size: 8pt;
-                color: #888;
-                margin-top: 50px;
-                text-align: justify;
-                border-top: 1px solid #ccc;
-                padding-top: 10px;
-            }}
-            .chart-container {{
-                text-align: center;
-                margin: 20px 0;
-            }}
-            img {{
-                max-width: 100%;
-                height: auto;
-            }}
-        </style>
+        <style>{STYLE_CSS}</style>
     </head>
     <body>
-        <!-- Header Content -->
-        <div id="header_content" style="text-align: center; color: #0A1932; font-weight: bold;">
-            TITAN FINANCIAL ANALYST // EQUITY RESEARCH
+        <!-- Header Frame Content -->
+        <div id="header_content" style="text-align: center; color: {COLOR_NAVY}; font-weight: bold; border-bottom: 2px solid {COLOR_GOLD}; padding-bottom: 5px;">
+            TITAN FINANCIAL ANALYST // INSTITUTIONAL RESEARCH
         </div>
         
-        <!-- Footer Content -->
-        <div id="footer_content" style="text-align: center; color: #888; font-size: 8pt;">
+        <!-- Footer Frame Content -->
+        <div id="footer_content" style="text-align: center; color: #888; font-size: 8pt; border-top: 1px solid #ccc; padding-top: 5px;">
             Strictly Confidential | Generated by Titan AI
         </div>
 
-        <h1>{ticker}</h1>
-        <div class="subtitle">INSTITUTIONAL EQUITY RESEARCH</div>
-        <div class="date">Date: {time.strftime('%B %d, %Y')}</div>
-        
-        <div class="executive-box">
-            <span class="executive-title">1. EXECUTIVE THESIS</span>
-            {pm_html}
+        <!-- Title Page Content -->
+        <div style="text-align: center; margin-top: 100px; margin-bottom: 100px;">
+            <h1>{ticker}</h1>
+            <div style="font-size: 16pt; color: {COLOR_GOLD}; font-weight: bold; margin-bottom: 20px;">
+                INSTITUTIONAL EQUITY RESEARCH
+            </div>
+            <div style="font-size: 12pt; color: #555;">
+                Date: {datetime.now().strftime('%B %d, %Y')}
+            </div>
         </div>
-
-        <h2>2. MACRO-ECONOMIC LANDSCAPE</h2>
-        {macro_html}
-
-        <h2>3. FUNDAMENTAL DEEP DIVE</h2>
-        {fund_html}
-
-        <h2>4. QUANTITATIVE & RISK ANALYSIS</h2>
-        {quant_html}
         
-        {chart_html}
-        {table_html}
+        <pdf:nextpage />
 
-        <h2>5. KEY RISKS (RED TEAM VERDICT)</h2>
-        {red_html}
+        {sections_html}
 
         <div class="disclaimer">
             <strong>IMPORTANT DISCLOSURES & DISCLAIMER</strong><br>
-            This report is generated by an AI system (Titan Analyst) and is for informational purposes only. It does not constitute financial advice, an offer to sell, or a solicitation of an offer to buy any securities. The information contained herein is based on data available at the time of generation and may not be accurate or complete. Past performance is not indicative of future results. Investment involves risk, including the possible loss of principal.
+            This report is generated by an AI system (Titan Analyst) and is for informational purposes only. It does not constitute financial advice.
         </div>
     </body>
     </html>
@@ -324,32 +325,46 @@ def generate_pdf_report(ticker, report_data, chart_path=None, return_path=None, 
     
     # 4. Generate PDF
     pdf_file = BytesIO()
-    pisa_status = pisa.CreatePDF(
-        src=html_template,
-        dest=pdf_file
-    )
+    pisa_status = pisa.CreatePDF(src=full_html, dest=pdf_file)
     
     if pisa_status.err:
         return None
     
     return pdf_file.getvalue()
 
-# --- 4. CHART GENERATORS (Matched to Titan Theme) ---
+# --- 4. DATA & CHART LOGIC (Robust) ---
+def fetch_relative_returns(ticker, benchmark="SPY"):
+    try:
+        tickers = [ticker, benchmark]
+        # Download Data (5 Years default)
+        data = yf.download(tickers, period="5y", progress=False)['Close']
+        
+        if data is None or data.empty:
+            return None
+            
+        # Data Alignment (Inner Join via Dropna)
+        aligned_data = data.dropna()
+        
+        if aligned_data.empty: return None
+
+        # Normalize: (Price / Start_Price) - 1
+        normalized = (aligned_data / aligned_data.iloc[0]) - 1
+        return normalized
+    except Exception as e:
+        return None
+
 def generate_bar_chart(data_dict, title):
     try:
+        plt.clf()
         fig, ax = plt.subplots(figsize=(10, 6), dpi=300)
-        # Use Titan Colors: Navy for bars, Gold for highlight if needed
-        bars = ax.bar(data_dict.keys(), data_dict.values(), color='#0A1932')
-        ax.set_title(title, fontsize=14, fontweight='bold', color='#0A1932')
+        bars = ax.bar(data_dict.keys(), data_dict.values(), color=HEX_NAVY)
+        ax.set_title(title, fontsize=14, fontweight='bold', color=HEX_NAVY)
         ax.set_ylabel('Price ($)', fontsize=12)
         ax.grid(axis='y', linestyle='--', alpha=0.5)
-        
-        # Add values on top in Gold
         for bar in bars:
             height = bar.get_height()
             ax.text(bar.get_x() + bar.get_width()/2., height, f'${height:,.0f}', 
-                    ha='center', va='bottom', fontsize=12, fontweight='bold', color='#DAA520')
-        
+                    ha='center', va='bottom', fontsize=12, fontweight='bold', color=HEX_GOLD)
         plt.tight_layout()
         with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
             fig.savefig(tmp.name, format='png', bbox_inches='tight', dpi=300)
@@ -359,16 +374,22 @@ def generate_bar_chart(data_dict, title):
 
 def generate_line_chart(df, title):
     try:
+        plt.clf()
         fig, ax = plt.subplots(figsize=(10, 6), dpi=300)
-        # Plot lines with Titan Colors
-        colors = ['#0A1932', '#DAA520', 'grey']
-        for i, col in enumerate(df.columns):
-            color = colors[i % len(colors)]
-            ax.plot(df.index, df[col], marker='o', linewidth=2, label=col, color=color)
-            
-        ax.set_title(title, fontsize=14, fontweight='bold', color='#0A1932')
+        col_names = list(df.columns)
+        
+        # Determine colors based on column names logic or index
+        # We assume Target is col 0, Benchmark is col 1 if present
+        
+        ax.plot(df.index, df[col_names[0]] * 100, label=col_names[0], color=HEX_NAVY, linewidth=2.5)
+        if len(col_names) > 1:
+            ax.plot(df.index, df[col_names[1]] * 100, label=col_names[1], color='grey', linewidth=1.5, linestyle='--')
+
+        ax.set_title(title, fontsize=14, fontweight='bold', color=HEX_NAVY)
+        ax.set_ylabel('Cumulative Return (%)', fontsize=12)
         ax.legend(fontsize=10)
         ax.grid(True, linestyle='--', alpha=0.5)
+        ax.yaxis.set_major_formatter(matplotlib.ticker.PercentFormatter())
         plt.xticks(rotation=45)
         plt.tight_layout()
         
@@ -378,34 +399,18 @@ def generate_line_chart(df, title):
             return tmp.name
     except: return None
 
-# --- 5. LOGIC HELPERS ---
 def extract_chart_data(text):
     data = {}
     try:
         matches = re.findall(r'"(Bear|Base|Bull)":\s*(\d+)', text, re.IGNORECASE)
-        if not matches:
-             matches = re.findall(r'(Bear|Base|Bull).*?\$(\d+)', text, re.IGNORECASE)
+        if not matches: matches = re.findall(r'(Bear|Base|Bull).*?\$(\d+)', text, re.IGNORECASE)
         for label, value in matches:
             data[label.capitalize()] = float(value)
         if len(data) >= 2: return data
     except: pass
     return None
 
-def extract_return_data(text):
-    try:
-        match = re.search(r"(\{.*?(?:Years|SPY).*?\})", text, re.IGNORECASE | re.DOTALL)
-        if match:
-            json_str = match.group(1).replace("```", "").replace("json", "").replace("'", '"').strip()
-            data = json.loads(json_str)
-            if "Years" in data and "Ticker" in data and "SPY" in data:
-                df = pd.DataFrame(data)
-                df["Ticker ($10k)"] = 10000 * (1 + pd.to_numeric(df["Ticker"])/100).cumprod()
-                df["SPY ($10k)"] = 10000 * (1 + pd.to_numeric(df["SPY"])/100).cumprod()
-                return df.set_index("Years")[["Ticker ($10k)", "SPY ($10k)"]]
-    except: pass
-    return None
-
-# --- 6. AGENT ENGINE ---
+# --- 5. AGENT ENGINE ---
 async def run_agent(name, prompt, content):
     await asyncio.sleep(random.uniform(0.5, 2.0))
     for model_name in MODELS:
@@ -416,7 +421,7 @@ async def run_agent(name, prompt, content):
         except Exception as e:
             if "429" in str(e):
                 await asyncio.sleep(15)
-            # Fallback (Simulate without tools if tool failure)
+            # Fallback
             try:
                 model_pure = genai.GenerativeModel(model_name, safety_settings=SAFETY_SETTINGS)
                 response = await asyncio.wait_for(model_pure.generate_content_async(f"{prompt}\nCONTEXT: {content}"), timeout=90.0)
@@ -425,29 +430,30 @@ async def run_agent(name, prompt, content):
     return name, f"Analysis Failed for {name}."
 
 async def run_analysis(ticker):
+    # GET DYNAMIC PROMPTS
+    prompts = get_dynamic_prompts(ticker)
+    
     tasks = [
-        run_agent("Macro", MACRO_PROMPT, ticker),
-        run_agent("Fundamental", FUNDAMENTAL_PROMPT, ticker),
-        run_agent("Quant", QUANT_PROMPT, ticker)
+        run_agent("Macro", prompts["MACRO"], ticker),
+        run_agent("Fundamental", prompts["FUNDAMENTAL"], ticker),
+        run_agent("CFA", prompts["CFA"], ticker),
+        run_agent("Quant", prompts["QUANT"], ticker)
     ]
     results = await asyncio.gather(*tasks)
     data = {k: v for k, v in results}
     
-    if any("Analysis Failed" in str(v) for v in data.values()):
-        return data
+    if any("Analysis Failed" in str(v) for v in data.values()): return data
 
     st.toast("⏳ Cooling down quota for Red Team analysis...")
     await asyncio.sleep(5)
-    
-    _, data["Red Team"] = await run_agent("Red Team", RED_TEAM_PROMPT, str(data))
+    _, data["Red Team"] = await run_agent("Red Team", prompts["RED_TEAM"], str(data))
     
     st.toast("⏳ Cooling down quota for Final Thesis...")
     await asyncio.sleep(5)
-    
-    _, data["Portfolio Manager"] = await run_agent("Portfolio Manager", PORTFOLIO_PROMPT, str(data))
+    _, data["Portfolio Manager"] = await run_agent("Portfolio Manager", prompts["PORTFOLIO"], str(data))
     return data
 
-# --- 7. UI ---
+# --- 6. UI ---
 def main():
     st.set_page_config(page_title="Titan 2.0", layout="wide")
     st.title("⚡ Titan Analyst 2.0")
@@ -460,17 +466,15 @@ def main():
         submit_button = st.form_submit_button(label='Run Analysis')
     
     if submit_button:
-        with st.spinner("Initializing Titan Agents (Searching SEC EDGAR)..."):
+        with st.spinner("Initializing Titan Agents..."):
             st.session_state.report = asyncio.run(run_analysis(ticker))
     
     if st.session_state.report:
         rpt = st.session_state.report
         
-        failed_agents = [k for k, v in rpt.items() if "Analysis Failed" in str(v)]
-        if failed_agents:
-            st.error(f"🚨 Analysis Incomplete. Failures in: {', '.join(failed_agents)}")
-            for agent in failed_agents:
-                st.error(f"**{agent} Debug Info**: {rpt[agent]}")
+        failed = [k for k, v in rpt.items() if "Analysis Failed" in str(v)]
+        if failed:
+            st.error(f"🚨 Analysis Incomplete. Failures in: {', '.join(failed)}")
         else:
             c1, c2 = st.columns([2, 1])
             with c1:
@@ -482,27 +486,34 @@ def main():
                 if chart_data: st.bar_chart(chart_data)
                 else: st.caption("No targets found.")
 
-            t1, t2, t3, t4 = st.tabs(["Macro", "Fundamental", "Quant", "Red Team"])
+            t1, t2, t3, t4, t5 = st.tabs(["Macro", "Fundamental", "CFA", "Quant", "Red Team"])
             with t1: st.markdown(rpt.get("Macro", ""))
             with t2: st.markdown(rpt.get("Fundamental", ""))
-            with t3: 
+            with t3: st.markdown(rpt.get("CFA", ""))
+            with t4: 
                 st.markdown(rpt.get("Quant", ""))
                 st.divider()
-                st.subheader("📈 5-Year Return (Growth of $10k)")
-                ret_data = extract_return_data(rpt.get("Quant", ""))
+                st.subheader("📈 5-Year Relative Return")
+                ret_data = fetch_relative_returns(ticker)
                 if ret_data is not None: st.line_chart(ret_data)
-            with t4: st.error(rpt.get("Red Team", ""))
+            with t5: st.error(rpt.get("Red Team", ""))
             
             st.divider()
             try:
-                # Extract data again for PDF generation context
                 c_data = extract_chart_data(rpt.get("Quant", ""))
-                r_data = extract_return_data(rpt.get("Quant", ""))
-                pdf_bytes = generate_pdf_report(ticker, rpt, chart_path=generate_bar_chart(c_data, "Price Targets") if c_data else None, return_path=generate_line_chart(r_data, "Performance") if r_data is not None else None, return_df=r_data)
-                if pdf_bytes:
-                    st.download_button("📄 Download Professional Report (PDF)", pdf_bytes, f"{ticker}_Titan_Report.pdf", "application/pdf")
-                else:
-                    st.error("PDF Generation Failed (Unknown Error)")
+                
+                # Fetch Real Data for PDF Chart (Get fresh data for chart)
+                r_data = fetch_relative_returns(ticker)
+                
+                # Generate Chart Images
+                c_path = generate_bar_chart(c_data, "Price Targets") if c_data else None
+                
+                start_year = (datetime.now() - timedelta(days=5*365)).year
+                current_year = datetime.now().year
+                r_path = generate_line_chart(r_data, f"{start_year}-{current_year} Total Return vs Benchmark") if r_data is not None else None
+                
+                pdf_bytes = generate_pdf_report(ticker, rpt, chart_path=c_path, return_path=r_path)
+                st.download_button("📄 Download Professional Report (PDF)", pdf_bytes, f"{ticker}_Titan_Report.pdf", "application/pdf")
             except Exception as e:
                 st.error(f"PDF Gen Error: {e}")
 
