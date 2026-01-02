@@ -407,6 +407,10 @@ HEX_GOLD = '#DAA520'
 
 def generate_bar_chart(data_dict, title):
     try:
+        # Validate data
+        if not data_dict or len(data_dict) == 0:
+            return generate_placeholder_chart(title)
+            
         plt.clf()
         fig, ax = plt.subplots(figsize=(10, 6), dpi=300)
         bars = ax.bar(data_dict.keys(), data_dict.values(), color=HEX_NAVY)
@@ -421,18 +425,23 @@ def generate_bar_chart(data_dict, title):
             fig.savefig(tmp.name, format='png', bbox_inches='tight', dpi=300)
             plt.close(fig)
             return tmp.name
-    except: return None
+    except: return generate_placeholder_chart(title)
 
 def generate_line_chart(df, title):
     try:
-        if df is None or df.empty: return None
+        if df is None or df.empty: return generate_placeholder_chart(title)
+        
         plt.clf()
         fig, ax = plt.subplots(figsize=(10, 6), dpi=300)
+        
+        # Ensure index is datetime
         df.index = pd.to_datetime(df.index)
+        
         col_names = list(df.columns)
         ax.plot(df.index, df[col_names[0]] * 100, label=col_names[0], color=HEX_NAVY, linewidth=2.5)
         if len(col_names) > 1:
             ax.plot(df.index, df[col_names[1]] * 100, label=col_names[1], color='grey', linewidth=1.5, linestyle='--')
+            
         ax.set_title(title, fontsize=14, fontweight='bold', color=HEX_NAVY)
         ax.set_ylabel('Cumulative Return (%)', fontsize=12)
         ax.legend(fontsize=10)
@@ -440,11 +449,25 @@ def generate_line_chart(df, title):
         ax.yaxis.set_major_formatter(matplotlib.ticker.PercentFormatter())
         plt.xticks(rotation=45)
         plt.tight_layout()
+        
         with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
             fig.savefig(tmp.name, format='png', bbox_inches='tight', dpi=300)
             plt.close(fig)
             return tmp.name
-    except Exception as e: return None
+    except Exception as e: return generate_placeholder_chart(title)
+
+def generate_placeholder_chart(title):
+    """Creates a placeholder image if data is missing."""
+    try:
+        plt.clf()
+        fig, ax = plt.subplots(figsize=(10, 2))
+        ax.text(0.5, 0.5, f"Data Unavailable for {title}", ha='center', va='center', fontsize=14, color='gray')
+        ax.axis('off')
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
+            fig.savefig(tmp.name, format='png', bbox_inches='tight')
+            plt.close(fig)
+            return tmp.name
+    except: return None
 
 # --- 5. DATA HELPERS ---
 def fetch_relative_returns(ticker, benchmark="SPY"):
