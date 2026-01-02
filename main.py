@@ -522,7 +522,7 @@ async def run_analysis(user_input):
         current_price = market_data["price"]
         current_yield = market_data["yield"]
     else:
-        subject = user_input 
+        subject = user_input # Use full question
         current_price = None
         current_yield = market_data["yield"]
         
