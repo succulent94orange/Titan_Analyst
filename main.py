@@ -46,24 +46,16 @@ def normalize_ticker(user_input):
     return user_input.split()[0].upper().strip()
 
 def fetch_market_data(ticker):
-    """Fetches Stock Price, Name, and Treasury Yield."""
+    """Fetches both Stock Price and Treasury Yield (Risk Free Rate)."""
     clean_ticker = normalize_ticker(ticker)
     data_pkg = {"price": None, "yield": None, "is_valid_ticker": False, "name": ticker}
     
     try:
-        # Fetch Stock Data
-        stock = yf.Ticker(clean_ticker)
-        hist = stock.history(period="5d")
-        
-        if not hist.empty:
-            data_pkg["price"] = hist['Close'].iloc[-1]
+        # Fetch Stock Price
+        stock_data = yf.Ticker(clean_ticker).history(period="5d")
+        if not stock_data.empty:
+            data_pkg["price"] = stock_data['Close'].iloc[-1]
             data_pkg["is_valid_ticker"] = True
-            # Get Company Name
-            try:
-                info = stock.info
-                data_pkg["name"] = info.get('longName', clean_ticker)
-            except:
-                data_pkg["name"] = clean_ticker
         
         # Always fetch Treasury Yield for macro context
         treasury_data = yf.Ticker("^TNX").history(period="5d")
@@ -407,10 +399,6 @@ HEX_GOLD = '#DAA520'
 
 def generate_bar_chart(data_dict, title):
     try:
-        # Validate data
-        if not data_dict or len(data_dict) == 0:
-            return generate_placeholder_chart(title)
-            
         plt.clf()
         fig, ax = plt.subplots(figsize=(10, 6), dpi=300)
         bars = ax.bar(data_dict.keys(), data_dict.values(), color=HEX_NAVY)
@@ -425,23 +413,18 @@ def generate_bar_chart(data_dict, title):
             fig.savefig(tmp.name, format='png', bbox_inches='tight', dpi=300)
             plt.close(fig)
             return tmp.name
-    except: return generate_placeholder_chart(title)
+    except: return None
 
 def generate_line_chart(df, title):
     try:
-        if df is None or df.empty: return generate_placeholder_chart(title)
-        
+        if df is None or df.empty: return None
         plt.clf()
         fig, ax = plt.subplots(figsize=(10, 6), dpi=300)
-        
-        # Ensure index is datetime
         df.index = pd.to_datetime(df.index)
-        
         col_names = list(df.columns)
         ax.plot(df.index, df[col_names[0]] * 100, label=col_names[0], color=HEX_NAVY, linewidth=2.5)
         if len(col_names) > 1:
             ax.plot(df.index, df[col_names[1]] * 100, label=col_names[1], color='grey', linewidth=1.5, linestyle='--')
-            
         ax.set_title(title, fontsize=14, fontweight='bold', color=HEX_NAVY)
         ax.set_ylabel('Cumulative Return (%)', fontsize=12)
         ax.legend(fontsize=10)
@@ -449,40 +432,24 @@ def generate_line_chart(df, title):
         ax.yaxis.set_major_formatter(matplotlib.ticker.PercentFormatter())
         plt.xticks(rotation=45)
         plt.tight_layout()
-        
         with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
             fig.savefig(tmp.name, format='png', bbox_inches='tight', dpi=300)
             plt.close(fig)
             return tmp.name
-    except Exception as e: return generate_placeholder_chart(title)
-
-def generate_placeholder_chart(title):
-    """Creates a placeholder image if data is missing."""
-    try:
-        plt.clf()
-        fig, ax = plt.subplots(figsize=(10, 2))
-        ax.text(0.5, 0.5, f"Data Unavailable for {title}", ha='center', va='center', fontsize=14, color='gray')
-        ax.axis('off')
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
-            fig.savefig(tmp.name, format='png', bbox_inches='tight')
-            plt.close(fig)
-            return tmp.name
-    except: return None
+    except Exception as e: return None
 
 # --- 5. DATA HELPERS ---
 def fetch_relative_returns(ticker, benchmark="SPY"):
     try:
         clean_ticker = normalize_ticker(ticker)
+        # Check if valid
+        data = yf.download(clean_ticker, period="5y", progress=False)['Close']
+        if data is None or data.empty: return None
+
         tickers = [clean_ticker, benchmark]
         data = yf.download(tickers, period="5y", progress=False)['Close']
-        if data is None or data.empty: return None
-        
-        # Ensure numeric type for safe plotting/math
-        data = data.apply(pd.to_numeric, errors='coerce')
-        
         aligned_data = data.dropna()
         if aligned_data.empty: return None
-        
         normalized = (aligned_data / aligned_data.iloc[0]) - 1
         return normalized
     except: return None
@@ -516,27 +483,36 @@ def extract_return_data(text):
 # --- 6. AGENT ENGINE ---
 async def run_agent(name, prompt, content):
     await asyncio.sleep(random.uniform(0.5, 2.0))
-    for model_name in MODELS:
-        try:
-            # Use new SDK syntax for generate_content
-            response = await client.aio.models.generate_content(
-                model=model_name,
-                contents=f"{prompt}\nCONTEXT: {content}",
-                config=types.GenerateContentConfig(temperature=0.2, safety_settings=[
-                    types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_ONLY_HIGH"),
-                    types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_ONLY_HIGH"),
-                    types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_ONLY_HIGH"),
-                    types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_ONLY_HIGH")
-                ])
-            )
-            if response.text: return name, response.text
-        except Exception as e:
-            if "429" in str(e):
-                await asyncio.sleep(15)
-            continue
+    
+    # Robust Retry Loop (3 Attempts per agent)
+    for attempt in range(3):
+        for model_name in MODELS:
+            try:
+                # Use new SDK syntax for generate_content
+                response = await client.aio.models.generate_content(
+                    model=model_name,
+                    contents=f"{prompt}\nCONTEXT: {content}",
+                    config=types.GenerateContentConfig(temperature=0.2, safety_settings=[
+                        types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_ONLY_HIGH"),
+                        types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_ONLY_HIGH"),
+                        types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_ONLY_HIGH"),
+                        types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_ONLY_HIGH")
+                    ])
+                )
+                if response.text: return name, response.text
+            except Exception as e:
+                # Log error if needed, wait and retry
+                if "429" in str(e):
+                    # Rate limit hit, wait longer
+                    await asyncio.sleep(20 * (attempt + 1))
+                else:
+                    await asyncio.sleep(5)
+                continue # Try next model or next attempt
+
     return name, f"Analysis Failed for {name}."
 
 async def run_analysis(user_input):
+    # 1. Determine Subject & Context
     market_data = fetch_market_data(user_input)
     is_ticker = market_data["is_valid_ticker"]
     
@@ -549,6 +525,7 @@ async def run_analysis(user_input):
         current_price = None
         current_yield = market_data["yield"]
         
+    # 2. GENERATE PROMPTS
     prompts = get_dynamic_prompts(subject, current_price, current_yield, is_ticker)
     
     tasks = [
@@ -563,13 +540,13 @@ async def run_analysis(user_input):
     if any("Analysis Failed" in str(v) for v in data.values()): return data
 
     st.toast("⏳ Cooling down quota for Red Team analysis...")
-    await asyncio.sleep(5)
+    await asyncio.sleep(8)
     
     combined_reports = "\n".join([v for k,v in data.items()])
     _, data["Red Team"] = await run_agent("Red Team", prompts["RED_TEAM"], combined_reports)
     
     st.toast("⏳ Cooling down quota for Final Thesis...")
-    await asyncio.sleep(5)
+    await asyncio.sleep(8)
     
     combined_reports += f"\n\nRED TEAM VERDICT:\n{data['Red Team']}"
     _, data["Portfolio Manager"] = await run_agent("Portfolio Manager", prompts["PORTFOLIO"], combined_reports)
