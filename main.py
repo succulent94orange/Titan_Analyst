@@ -11,13 +11,9 @@ import pandas as pd
 import matplotlib
 import matplotlib.pyplot as plt
 import tempfile
-
-# ReportLab Imports for Professional PDFs
-from reportlab.lib.pagesizes import LETTER
-from reportlab.lib import colors
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle, PageBreak
-from reportlab.lib.units import inch
+import markdown
+from xhtml2pdf import pisa
+from io import BytesIO
 
 # 1. SETUP
 # Set Matplotlib to non-interactive mode to prevent crashes
@@ -31,8 +27,10 @@ if not api_key:
 
 genai.configure(api_key=api_key)
 
-# Model Priority: Try 3.0 -> 2.0 Flash -> 1.5 Pro (Safety Net)
-MODELS = ["gemini-3-pro-preview", "gemini-2.0-flash", "gemini-1.5-pro"]
+# Model Priority: STRICT MODE - GEMINI 3 PRO ONLY
+MODELS = [
+    "gemini-3-pro-preview"
+]
 
 # SAFETY SETTINGS
 SAFETY_SETTINGS = [
@@ -42,11 +40,16 @@ SAFETY_SETTINGS = [
     {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
 ]
 
-# --- 2. PROMPT DEFINITIONS ---
+# --- 2. PROMPT DEFINITIONS (TITAN V3) ---
 MACRO_PROMPT = """
 You are the Macro Council (Voices: Ray Dalio, Stanley Druckenmiller).
 FRAMEWORK: Step-Back Prompting + Tree of Thoughts.
+
 TASK: Analyze the global macro environment for the target asset.
+1. "Step Back" and identify the abstract economic principle governing the current era.
+2. Apply Tree of Thoughts (ToT) to branch into three scenarios: Inflation Resurgence, Soft Landing, Deflationary Bust.
+3. Identify "Macro Drag": Specific headwinds for the specific sector.
+
 OUTPUT FORMAT:
 - Executive Summary (Text)
 - **Markdown Table**: Key Indicators (Inflation, Rates, GDP)
@@ -56,10 +59,20 @@ OUTPUT FORMAT:
 FUNDAMENTAL_PROMPT = """
 You are the Fundamental Specialist (Voices: Peter Lynch, Warren Buffett, Michael Porter).
 FRAMEWORK: ReAct (Reason+Act) + Unit Economics Deep-Dive.
+
 TASK: Analyze the business health, revenue quality, and moat.
-**SEC EDGAR PROTOCOL:**
-1. Simulate accessing SEC.gov to check 10-K Risk Factors & MD&A.
-2. Verify management claims.
+
+**SEC EDGAR PROTOCOL (MANDATORY):**
+1. You must simulate accessing [https://www.sec.gov/edgar/search/](https://www.sec.gov/edgar/search/)
+2. Locate the latest **10-K** and **10-Q**.
+3. Specifically analyze **Item 1A. Risk Factors** and **Item 7. MD&A**.
+
+**DEEP DIVE TASKS:**
+1. **Unit Economics Check:** Analyze LTV/CAC, Same-Store Sales, or relevant efficiency metrics.
+2. **Moat Analysis (Porter):** Analyze Supplier Power, Buyer Power, and Threat of Substitutes.
+3. **Capital Allocation Scorecard:** Grade management on Buybacks vs. Empire Building.
+4. **Executive Compensation Audit:** Analyze the Proxy Statement. Are executives paid on EPS (Risk of Manipulation) or ROIC/Free Cash Flow (Shareholder Alignment)?
+
 OUTPUT FORMAT:
 - Business Health Analysis (citing 10-K findings)
 - **Markdown Table**: Unit Economics & KPIs
@@ -69,13 +82,19 @@ OUTPUT FORMAT:
 QUANT_PROMPT = """
 You are the Quant Desk (Voices: Jim Simons, Nassim Taleb).
 FRAMEWORK: Program-Aided Language (PAL) logic.
+
 TASK: Analyze valuation, risk, and sensitivity.
+
+**QUANT TASKS:**
+1. **Valuation Risk:** Is the stock priced for perfection? (Compare P/E to Historical Average).
+2. **Factor Exposure:** Is the asset driven by Quality, Momentum, or Value factors?
+3. **Sensitivity Analysis:** How does price change if WACC increases by 1%?
+4. **Stochastic DCF:** Perform a mental Monte Carlo simulation (10k iterations) for 5th/95th percentile outcomes.
+
 **CRITICAL OUTPUT:**
 1. **Markdown Table**: Valuation Metrics (P/E, PEG, FCF Yield).
 2. **CHART DATA** (Price Targets). Format exactly like this:
-   Bear Case: 100
-   Base Case: 150
-   Bull Case: 200
+   {"Bear": 100, "Base": 150, "Bull": 200}
 3. **RETURN DATA** (5-Year Comparison vs SPY). Output a JSON block:
    {"Years": ["2020", "2021", "2022", "2023", "2024"], "Ticker": [10, 20, -5, 15, 30], "SPY": [15, 25, -18, 24, 12]}
 """
@@ -83,219 +102,271 @@ TASK: Analyze valuation, risk, and sensitivity.
 RED_TEAM_PROMPT = """
 You are the Red Team (Voice: Jim Chanos, Gary Klein).
 FRAMEWORK: Bayesian Network Synthesis + Pre-Mortem + Forward-Backward Reasoning.
+
 TASK: Review the reports below. Find contradictions, hallucinations, and fatal risks.
-SEC FORENSICS: Check Legal Proceedings and Related Party Transactions.
+
+**RISK PROTOCOLS:**
+1. **Backward Check:** Take the current stock price and reverse-engineer the required growth. Is it realistic?
+2. **The Grey Rhino:** Identify high-probability, high-impact threats everyone is ignoring (e.g., Debt Maturity Walls).
+3. **Pre-Mortem:** Assume the investment failed 3 years from now. Write the obituary.
+4. **SEC Forensics:** Check "Legal Proceedings" and "Related Party Transactions" for red flags.
 """
 
 PORTFOLIO_PROMPT = """
 You are the CIO (The Chair).
 FRAMEWORK: Chain of Density + Sell Discipline.
+
 TASK: Synthesize the Red Team's verdict into a final Executive Thesis.
+
+**CIO TASKS:**
+1. **Generate Executive Thesis:** Use Chain of Density to maximize information per word.
+2. **Variant Perception:** Explicitly state how your view differs from Consensus.
+3. **Sell Triggers:** Define 3 hard rules for selling this position (e.g., "If ROIC drops below 15%").
+4. **Historical Audit:** Briefly mention if this model would have failed in the last crisis (2020/2022) based on current logic.
 """
 
 FOLLOWUP_PROMPT = """
 You are a Research Assistant. Answer user questions based ONLY on the provided report context.
 """
 
-# --- 3. GRAPHIC DESIGN ENGINE (ReportLab) ---
-
-class TitanReportGen:
-    def __init__(self, filename):
-        self.filename = filename
-        self.styles = getSampleStyleSheet()
-        self.story = []
-        
-        # Define Custom Styles
-        self.colors = {
-            "navy": colors.Color(10/255, 25/255, 50/255),
-            "gold": colors.Color(218/255, 165/255, 32/255),
-            "light_blue": colors.Color(235/255, 240/255, 245/255),
-            "grey": colors.Color(50/255, 50/255, 50/255)
-        }
-        
-        # Custom Title Style
-        self.styles.add(ParagraphStyle(
-            name='TitanTitle',
-            parent=self.styles['Heading1'],
-            fontSize=24,
-            textColor=self.colors["navy"],
-            spaceAfter=20,
-            alignment=1 # Center
-        ))
-        
-        # Custom Header Style
-        self.styles.add(ParagraphStyle(
-            name='TitanHeader',
-            parent=self.styles['Heading2'],
-            fontSize=14,
-            textColor=self.colors["navy"],
-            backColor=self.colors["light_blue"],
-            borderPadding=5,
-            spaceAfter=10,
-            spaceBefore=10
-        ))
-        
-        # Body Text
-        self.styles.add(ParagraphStyle(
-            name='TitanBody',
-            parent=self.styles['Normal'],
-            fontSize=10,
-            textColor=self.colors["grey"],
-            leading=14, # Line spacing
-            spaceAfter=10
-        ))
-
-    def add_header_footer(self, canvas, doc):
-        canvas.saveState()
-        
-        # Header
-        canvas.setFillColor(self.colors["navy"])
-        canvas.rect(0, LETTER[1] - 50, LETTER[0], 50, fill=1)
-        canvas.setFillColor(self.colors["gold"])
-        canvas.setFont('Helvetica-Bold', 12)
-        canvas.drawString(30, LETTER[1] - 30, "TITAN FINANCIAL ANALYST // INSTITUTIONAL RESEARCH")
-        
-        # Footer
-        canvas.setFillColor(colors.grey)
-        canvas.setFont('Helvetica-Oblique', 8)
-        canvas.drawString(30, 30, f"Confidential Report | Generated by Titan AI | Page {doc.page}")
-        
-        canvas.restoreState()
-
-    def clean_text(self, text):
-        # ReportLab supports basic XML tags like <b>, <i>. 
-        # We need to sanitize Markdown or unsupported chars.
-        text = str(text)
-        text = text.replace('**', '') # Remove bold markdown for now
-        text = text.replace('#', '') 
-        # Escape XML characters
-        text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-        # Re-add basic formatting if needed, but simple clean is safer
-        return text
-
-    def add_title_page(self, ticker):
-        self.story.append(Spacer(1, 2*inch))
-        self.story.append(Paragraph(f"Investment Memorandum: {ticker}", self.styles['TitanTitle']))
-        self.story.append(Paragraph(f"Date: {time.strftime('%B %d, %Y')}", self.styles['TitanBody']))
-        self.story.append(Spacer(1, 0.5*inch))
-        
-        # Executive Summary Box Logic (simulated with a Table)
-        # We will add this later when processing sections
-        self.story.append(PageBreak())
-
-    def add_section(self, title, content):
-        self.story.append(Paragraph(title, self.styles['TitanHeader']))
-        
-        # Split content into paragraphs
-        paragraphs = content.split('\n\n')
-        for p in paragraphs:
-            if p.strip():
-                self.story.append(Paragraph(self.clean_text(p), self.styles['TitanBody']))
-    
-    def add_image(self, image_path, width=6*inch):
-        if image_path:
-            img = Image(image_path)
-            # Aspect ratio check could go here, but simple scaling for now
-            img.drawHeight = 3*inch
-            img.drawWidth = width
-            self.story.append(img)
-            self.story.append(Spacer(1, 0.2*inch))
-
-    def add_dataframe_table(self, df):
-        # Convert DataFrame to list of lists for ReportLab Table
-        data = [df.columns.tolist()] + df.values.tolist()
-        
-        t = Table(data)
-        t.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), self.colors["navy"]),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-            ('BACKGROUND', (0, 1), (-1, -1), self.colors["light_blue"]),
-            ('GRID', (0, 0), (-1, -1), 1, colors.white)
-        ]))
-        self.story.append(t)
-        self.story.append(Spacer(1, 0.2*inch))
-
-    def build(self):
-        doc = SimpleDocTemplate(self.filename, pagesize=LETTER)
-        doc.build(self.story, onFirstPage=self.add_header_footer, onLaterPages=self.add_header_footer)
+# --- 3. GRAPHIC DESIGN ENGINE (Titan Professional PDF - HTML/CSS) ---
 
 def generate_pdf_report(ticker, report_data, chart_path=None, return_path=None, return_df=None):
-    pdf_file = f"{ticker}_Titan_Report.pdf"
+    # 1. Prepare HTML Content
     
-    # Use a temp file for safety in Streamlit
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-        gen = TitanReportGen(tmp.name)
+    # Convert Markdown to HTML
+    pm_html = markdown.markdown(report_data.get("Portfolio Manager", "N/A"), extensions=['tables'])
+    macro_html = markdown.markdown(report_data.get("Macro", "N/A"), extensions=['tables'])
+    fund_html = markdown.markdown(report_data.get("Fundamental", "N/A"), extensions=['tables'])
+    quant_html = markdown.markdown(report_data.get("Quant", "N/A"), extensions=['tables'])
+    red_html = markdown.markdown(report_data.get("Red Team", "N/A"), extensions=['tables'])
+    
+    # Prepare Images
+    chart_html = ""
+    if chart_path:
+        # Use file protocol for local images if needed, but xhtml2pdf handles paths
+        chart_html += f'<div class="chart-container"><h3>Valuation Scenarios (12-Month Targets)</h3><img src="{chart_path}" style="width: 15cm;" /></div>'
+    
+    if return_path:
+        chart_html += f'<div class="chart-container"><h3>5-Year Total Return Comparison (Growth of $10k)</h3><img src="{return_path}" style="width: 15cm;" /></div>'
         
-        # 1. Title Page
-        gen.add_title_page(ticker)
-        
-        # 2. Executive Thesis (Priority)
-        gen.add_section("1. Executive Thesis", report_data.get("Portfolio Manager", "N/A"))
-        
-        # 3. Macro
-        gen.add_section("2. Macro-Economic View", report_data.get("Macro", "N/A"))
-        
-        # 4. Fundamental
-        gen.add_section("3. Fundamental Deep Dive", report_data.get("Fundamental", "N/A"))
-        
-        # 5. Quant & Charts
-        gen.add_section("4. Quantitative & Risk Analysis", report_data.get("Quant", "N/A"))
-        if chart_path:
-            gen.add_image(chart_path)
-        
-        if return_path:
-            gen.add_section("Performance Comparison (5-Year)", "")
-            gen.add_image(return_path)
+    # Prepare Data Table
+    table_html = ""
+    if return_df is not None:
+        # Simple HTML table for the return data
+        table_html = f"<h3>Historical Return Data</h3>{return_df.reset_index().to_html(index=False)}"
+
+    # 2. Construct Full HTML Document with CSS
+    # Using @frame for static headers/footers to avoid NotImplementedError in older reportlab/xhtml2pdf combos
+    html_template = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Titan Analyst Report - {ticker}</title>
+        <style>
+            @page {{
+                size: letter;
+                margin: 2.5cm;
+                @frame header_frame {{           /* Static Frame */
+                    -pdf-frame-content: header_content;
+                    left: 20pt; width: 572pt; top: 20pt; height: 40pt;
+                }}
+                @frame footer_frame {{           /* Static Frame */
+                    -pdf-frame-content: footer_content;
+                    left: 20pt; width: 572pt; top: 750pt; height: 20pt;
+                }}
+            }}
             
-        if return_df is not None:
-             gen.add_dataframe_table(return_df.reset_index())
-
-        # 6. Red Team
-        gen.add_section("5. Key Risks (Red Team)", report_data.get("Red Team", "N/A"))
+            body {{
+                font-family: Helvetica, sans-serif;
+                font-size: 11pt;
+                line-height: 1.5;
+                color: #333333;
+            }}
+            h1 {{
+                color: #0A1932; /* Navy */
+                font-size: 26pt;
+                text-align: center;
+                margin-top: 0;
+                margin-bottom: 5px;
+            }}
+            .subtitle {{
+                color: #DAA520; /* Gold */
+                font-size: 14pt;
+                text-align: center;
+                font-weight: bold;
+                margin-bottom: 20px;
+            }}
+            .date {{
+                text-align: center;
+                font-size: 12pt;
+                margin-bottom: 40px;
+                color: #555;
+            }}
+            h2 {{
+                color: #0A1932; /* Navy */
+                font-size: 16pt;
+                border-bottom: 2px solid #DAA520; /* Gold Underline */
+                padding-bottom: 5px;
+                margin-top: 30px;
+                background-color: #EBF0F5;
+                padding: 5px;
+            }}
+            h3 {{
+                color: #0A1932;
+                font-size: 13pt;
+                margin-top: 20px;
+            }}
+            
+            /* Executive Box Style */
+            .executive-box {{
+                background-color: #F4F7FA;
+                border: 1px solid #0A1932;
+                padding: 15px;
+                margin-bottom: 20px;
+            }}
+            .executive-title {{
+                color: #DAA520;
+                font-weight: bold;
+                font-size: 14pt;
+                margin-bottom: 10px;
+                display: block;
+            }}
+            
+            /* Table Styling */
+            table {{
+                width: 100%;
+                border-collapse: collapse;
+                margin-bottom: 20px;
+                font-size: 10pt;
+                border: 1pt solid #dddddd;
+            }}
+            th {{
+                background-color: #0A1932;
+                color: #DAA520; /* Gold Text */
+                font-weight: bold;
+                text-align: center;
+                padding: 8px;
+            }}
+            td {{
+                padding: 8px;
+                border-bottom: 1pt solid #dddddd;
+            }}
+            
+            .disclaimer {{
+                font-size: 8pt;
+                color: #888;
+                margin-top: 50px;
+                text-align: justify;
+                border-top: 1px solid #ccc;
+                padding-top: 10px;
+            }}
+            .chart-container {{
+                text-align: center;
+                margin: 20px 0;
+            }}
+        </style>
+    </head>
+    <body>
+        <!-- Header Content -->
+        <div id="header_content" style="text-align: center; color: #0A1932; font-weight: bold;">
+            TITAN FINANCIAL ANALYST // EQUITY RESEARCH
+        </div>
         
-        gen.build()
-        
-        # Read back the bytes
-        with open(tmp.name, "rb") as f:
-            return f.read()
+        <!-- Footer Content -->
+        <div id="footer_content" style="text-align: center; color: #888; font-size: 8pt;">
+            Strictly Confidential | Generated by Titan AI
+        </div>
 
-# --- 4. DATA & CHART LOGIC ---
+        <h1>{ticker}</h1>
+        <div class="subtitle">INSTITUTIONAL EQUITY RESEARCH</div>
+        <div class="date">Date: {time.strftime('%B %d, %Y')}</div>
+        
+        <div class="executive-box">
+            <span class="executive-title">1. EXECUTIVE THESIS</span>
+            {pm_html}
+        </div>
+
+        <h2>2. MACRO-ECONOMIC LANDSCAPE</h2>
+        {macro_html}
+
+        <h2>3. FUNDAMENTAL DEEP DIVE</h2>
+        {fund_html}
+
+        <h2>4. QUANTITATIVE & RISK ANALYSIS</h2>
+        {quant_html}
+        
+        {chart_html}
+        {table_html}
+
+        <h2>5. KEY RISKS (RED TEAM VERDICT)</h2>
+        {red_html}
+
+        <div class="disclaimer">
+            <strong>IMPORTANT DISCLOSURES & DISCLAIMER</strong><br>
+            This report is generated by an AI system (Titan Analyst) and is for informational purposes only. It does not constitute financial advice, an offer to sell, or a solicitation of an offer to buy any securities. The information contained herein is based on data available at the time of generation and may not be accurate or complete. Past performance is not indicative of future results. Investment involves risk, including the possible loss of principal.
+        </div>
+    </body>
+    </html>
+    """
+    
+    # 3. Generate PDF
+    pdf_file = BytesIO()
+    pisa_status = pisa.CreatePDF(
+        src=html_template,
+        dest=pdf_file
+    )
+    
+    if pisa_status.err:
+        return None
+    
+    return pdf_file.getvalue()
+
+# --- 4. CHART GENERATORS (Matched to Titan Theme) ---
 def generate_bar_chart(data_dict, title):
     try:
-        fig, ax = plt.subplots(figsize=(8, 4))
-        colors = ['#ff9999', '#66b3ff', '#99ff99']
-        bars = ax.bar(data_dict.keys(), data_dict.values(), color=colors[:len(data_dict)])
-        ax.set_title(title)
-        ax.set_ylabel('Price ($)')
-        ax.grid(axis='y', linestyle='--', alpha=0.7)
+        fig, ax = plt.subplots(figsize=(10, 6), dpi=300)
+        # Use Titan Colors: Navy for bars, Gold for highlight if needed
+        bars = ax.bar(data_dict.keys(), data_dict.values(), color=HEX_NAVY)
+        ax.set_title(title, fontsize=14, fontweight='bold', color=HEX_NAVY)
+        ax.set_ylabel('Price ($)', fontsize=12)
+        ax.grid(axis='y', linestyle='--', alpha=0.5)
+        
+        # Add values on top in Gold
         for bar in bars:
             height = bar.get_height()
-            ax.text(bar.get_x() + bar.get_width()/2., height, f'${height:,.0f}', ha='center', va='bottom')
+            ax.text(bar.get_x() + bar.get_width()/2., height, f'${height:,.0f}', 
+                    ha='center', va='bottom', fontsize=12, fontweight='bold', color=HEX_GOLD)
         
+        plt.tight_layout()
         with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
-            fig.savefig(tmp.name, format='png', bbox_inches='tight')
+            fig.savefig(tmp.name, format='png', bbox_inches='tight', dpi=300)
             plt.close(fig)
             return tmp.name
     except: return None
 
 def generate_line_chart(df, title):
     try:
-        fig, ax = plt.subplots(figsize=(8, 4))
-        for col in df.columns:
-            ax.plot(df.index, df[col], marker='o', label=col)
-        ax.set_title(title)
-        ax.legend()
+        fig, ax = plt.subplots(figsize=(10, 6), dpi=300)
+        # Plot lines with Titan Colors
+        colors = [HEX_NAVY, HEX_GOLD, 'grey']
+        for i, col in enumerate(df.columns):
+            color = colors[i % len(colors)]
+            ax.plot(df.index, df[col], marker='o', linewidth=2, label=col, color=color)
+            
+        ax.set_title(title, fontsize=14, fontweight='bold', color=HEX_NAVY)
+        ax.legend(fontsize=10)
         ax.grid(True, linestyle='--', alpha=0.5)
+        plt.xticks(rotation=45)
+        plt.tight_layout()
         
         with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
-            fig.savefig(tmp.name, format='png', bbox_inches='tight')
+            fig.savefig(tmp.name, format='png', bbox_inches='tight', dpi=300)
             plt.close(fig)
             return tmp.name
     except: return None
 
+# --- 5. LOGIC HELPERS ---
 def extract_chart_data(text):
     data = {}
     try:
@@ -322,48 +393,24 @@ def extract_return_data(text):
     except: pass
     return None
 
-def extract_markdown_tables(text):
-    lines = text.split('\n')
-    table_lines = []
-    for line in lines:
-        if line.strip().startswith('|'):
-            if "---" in line: continue
-            table_lines.append([x.strip() for x in line.strip().split('|') if x])
-    if len(table_lines) > 1:
-        try:
-            headers = table_lines[0]
-            data = table_lines[1:]
-            return pd.DataFrame(data, columns=headers)
-        except: return None
-    return None
-
-# --- 5. AGENT ENGINE ---
+# --- 6. AGENT ENGINE ---
 async def run_agent(name, prompt, content):
     await asyncio.sleep(random.uniform(0.5, 2.0))
-    last_error = "Unknown"
-    
     for model_name in MODELS:
-        # ATTEMPT 1: Try with Tools (Search)
         try:
             model = genai.GenerativeModel(model_name, tools='google_search', safety_settings=SAFETY_SETTINGS)
             response = await asyncio.wait_for(model.generate_content_async(f"{prompt}\nCONTEXT: {content}"), timeout=90.0)
             if response.text: return name, response.text
         except Exception as e:
-            last_error = f"{model_name} (Tools): {str(e)}"
             if "429" in str(e):
-                await asyncio.sleep(5) # Wait for quota reset
-            
-            # ATTEMPT 2: Fallback to Pure Reasoning (No Tools)
-            # This fixes "Internal Error" or "404" when search isn't supported
+                await asyncio.sleep(15)
+            # Fallback
             try:
                 model_pure = genai.GenerativeModel(model_name, safety_settings=SAFETY_SETTINGS)
                 response = await asyncio.wait_for(model_pure.generate_content_async(f"{prompt}\nCONTEXT: {content}"), timeout=90.0)
                 if response.text: return name, response.text
-            except Exception as e2:
-                last_error = f"{model_name} (Pure): {str(e2)}"
-                continue
-
-    return name, f"Analysis Failed. Last Error: {last_error}"
+            except: continue
+    return name, f"Analysis Failed for {name}."
 
 async def run_analysis(ticker):
     tasks = [
@@ -374,25 +421,21 @@ async def run_analysis(ticker):
     results = await asyncio.gather(*tasks)
     data = {k: v for k, v in results}
     
-    # Check for failures
-    failed = [k for k, v in data.items() if "Analysis Failed" in str(v)]
-    if failed:
-        return data # Return partial data so user can see the error
+    if any("Analysis Failed" in str(v) for v in data.values()):
+        return data
 
-    # COOL-DOWN: Wait 5 seconds before hitting the API again for Red Team
     st.toast("⏳ Cooling down quota for Red Team analysis...")
     await asyncio.sleep(5)
     
     _, data["Red Team"] = await run_agent("Red Team", RED_TEAM_PROMPT, str(data))
     
-    # COOL-DOWN: Wait another 5 seconds for Portfolio Manager
     st.toast("⏳ Cooling down quota for Final Thesis...")
     await asyncio.sleep(5)
     
     _, data["Portfolio Manager"] = await run_agent("Portfolio Manager", PORTFOLIO_PROMPT, str(data))
     return data
 
-# --- 6. UI ---
+# --- 7. UI ---
 def main():
     st.set_page_config(page_title="Titan 2.0", layout="wide")
     st.title("⚡ Titan Analyst 2.0")
@@ -440,15 +483,14 @@ def main():
             
             st.divider()
             try:
-                # Generate Charts for PDF
+                # Extract data again for PDF generation context
                 c_data = extract_chart_data(rpt.get("Quant", ""))
-                c_path = generate_bar_chart(c_data, "Price Targets") if c_data else None
-                
                 r_data = extract_return_data(rpt.get("Quant", ""))
-                r_path = generate_line_chart(r_data, "5-Year Performance") if r_data is not None else None
-                
-                pdf_bytes = generate_pdf_report(ticker, rpt, chart_path=c_path, return_path=r_path, return_df=r_data)
-                st.download_button("📄 Download Professional Report (PDF)", pdf_bytes, f"{ticker}_Titan_Report.pdf", "application/pdf")
+                pdf_bytes = generate_pdf_report(ticker, rpt, chart_path=generate_bar_chart(c_data, "Price Targets") if c_data else None, return_path=generate_line_chart(r_data, "Performance") if r_data is not None else None, return_df=r_data)
+                if pdf_bytes:
+                    st.download_button("📄 Download Professional Report (PDF)", pdf_bytes, f"{ticker}_Titan_Report.pdf", "application/pdf")
+                else:
+                    st.error("PDF generation failed.")
             except Exception as e:
                 st.error(f"PDF Gen Error: {e}")
 
