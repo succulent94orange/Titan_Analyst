@@ -1,6 +1,7 @@
 import numpy as np
 import scipy.stats as stats
 
+
 def print_header(title):
     print("\n" + "="*60)
     print(f" {title}")
