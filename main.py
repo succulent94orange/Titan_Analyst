@@ -1,3 +1,4 @@
+# --- START OF FILE main.py ---
 import streamlit as st
 import google.generativeai as genai
 import os
@@ -117,7 +118,6 @@ class TitanPDF(FPDF):
         self.cell(0, 10, 'INITIATION OF COVERAGE', 0, 1, 'C')
         self.ln(10)
         
-        # Rating & Target Box
         self.set_fill_color(245, 245, 245)
         self.set_draw_color(*COLOR_PRIMARY)
         self.rect(65, 100, 80, 25, 'DF')
@@ -280,7 +280,6 @@ def extract_return_data(text):
         match = re.search(r"(\{.*?(?:Years|SPY).*?\})", text, re.IGNORECASE | re.DOTALL)
         if match:
             json_str = match.group(1).replace("```", "").replace("json", "").strip()
-            # Clean weird quotes
             json_str = json_str.replace("'", '"')
             data = json.loads(json_str)
             if "Years" in data and "Ticker" in data and "SPY" in data:
@@ -306,16 +305,30 @@ def extract_markdown_tables(text):
         except: return None
     return None
 
+# --- 5. AGENT ENGINE ---
 async def run_agent(name, prompt, content):
-    await asyncio.sleep(random.uniform(0.5, 2.0))
+    # SLOW DOWN: Add clear stagger to avoid hitting QPS limit and show status
+    delay = random.uniform(2.0, 5.0)
+    st.toast(f"⏳ {name}: Queued. Starting in {delay:.1f}s...")
+    await asyncio.sleep(delay)
+    
+    st.toast(f"🚀 {name}: Analyzing...")
+    
     for model_name in MODELS:
         try:
-            model = genai.GenerativeModel(model_name) # Removed tools to reduce crashes
+            model = genai.GenerativeModel(model_name, tools='google_search') # Enabled tools
             response = await asyncio.wait_for(model.generate_content_async(f"{prompt}\nCONTEXT: {content}"), timeout=90.0)
-            if response.text: return name, response.text
+            
+            if response.text:
+                st.toast(f"✅ {name}: Complete!")
+                return name, response.text
         except Exception as e:
-            if "429" in str(e): await asyncio.sleep(10)
+            # If rate limit, wait longer (10-15s) and notify user
+            if "429" in str(e):
+                st.toast(f"⚠️ {name}: Rate limit hit. Pausing 15s...")
+                await asyncio.sleep(15)
             continue
+            
     return name, f"Analysis Failed for {name}. Please try again later."
 
 async def run_analysis(ticker):
@@ -327,15 +340,23 @@ async def run_analysis(ticker):
     results = await asyncio.gather(*tasks)
     data = {k: v for k, v in results}
     
-    # "Skip" check logic - warn but proceed
-    failed_agents = [k for k, v in data.items() if "Analysis Failed" in str(v)]
-    # We continue regardless of failure to show partial data
+    # Check for critical failures, but proceed if partial data exists
+    failed = [k for k, v in data.items() if "Analysis Failed" in str(v)]
+    if failed:
+        st.warning(f"Note: Some agents ({', '.join(failed)}) timed out. Report may be partial.")
 
+    # Second Phase: Debate & Synthesis (Sequential)
+    st.toast("⚔️ Red Team: Checking for risks...")
+    await asyncio.sleep(2)
     _, data["Red Team"] = await run_agent("Red Team", RED_TEAM_PROMPT, str(data))
+    
+    st.toast("👔 Portfolio Manager: Drafting thesis...")
+    await asyncio.sleep(2)
     _, data["Portfolio Manager"] = await run_agent("Portfolio Manager", PORTFOLIO_PROMPT, str(data))
+    
     return data
 
-# --- 5. UI ---
+# --- 6. UI ---
 def main():
     st.set_page_config(page_title="Titan 2.0", layout="wide")
     st.title("⚡ Titan Analyst 2.0")
@@ -348,22 +369,17 @@ def main():
         submit_button = st.form_submit_button(label='Run Analysis')
     
     if submit_button:
-        with st.spinner("Initializing Titan Agents..."):
+        with st.spinner("Initializing Titan Agents (Searching SEC EDGAR)..."):
             st.session_state.report = asyncio.run(run_analysis(ticker))
     
     if st.session_state.report:
         rpt = st.session_state.report
         
-        # Display warning if failures exist, but DON'T BLOCK
-        failed_agents = [k for k, v in rpt.items() if "Analysis Failed" in str(v)]
-        if failed_agents:
-            st.warning(f"⚠️ Partial Analysis. Failures in: {', '.join(failed_agents)}. Showing available data.")
-        
         # Dashboard
         c1, c2 = st.columns([2, 1])
         with c1:
             st.subheader("🏆 Executive Thesis")
-            st.info(rpt.get("Portfolio Manager", "Processing..."))
+            st.info(rpt.get("Portfolio Manager"))
         with c2:
             st.subheader("🎯 12-Month Targets")
             chart_data = extract_chart_data(rpt.get("Quant", ""))
@@ -405,3 +421,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+# --- END OF FILE main.py ---
