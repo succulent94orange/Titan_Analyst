@@ -48,36 +48,40 @@ def normalize_ticker(user_input):
 def fetch_market_data(ticker):
     """Fetches both Stock Price and Treasury Yield (Risk Free Rate)."""
     clean_ticker = normalize_ticker(ticker)
-    data_pkg = {"price": None, "yield": None}
+    data_pkg = {"price": None, "yield": None, "is_valid_ticker": False, "name": ticker}
     
     try:
         # Fetch Stock Price
         stock_data = yf.Ticker(clean_ticker).history(period="5d")
         if not stock_data.empty:
             data_pkg["price"] = stock_data['Close'].iloc[-1]
-            
-        # Fetch 10-Year Treasury Yield (^TNX)
+            data_pkg["is_valid_ticker"] = True
+        
+        # Always fetch Treasury Yield for macro context
         treasury_data = yf.Ticker("^TNX").history(period="5d")
         if not treasury_data.empty:
             data_pkg["yield"] = treasury_data['Close'].iloc[-1]
+            
     except:
         pass
     return data_pkg
 
-def get_dynamic_prompts(ticker, current_price=None, current_yield=None):
+def get_dynamic_prompts(subject, current_price=None, current_yield=None, is_ticker=True):
     now = datetime.now()
     current_date_str = now.strftime("%Y-%m-%d")
     
     # Build System Context
     context_parts = [
         f"CRITICAL REAL-TIME DATA (As of {current_date_str}):",
-        f"- Target Asset: {ticker}"
+        f"- Subject of Analysis: {subject}"
     ]
     
-    if current_price:
+    if is_ticker and current_price:
         context_parts.append(f"- CURRENT LIVE PRICE: ${current_price:.2f}")
         context_parts.append(f"- RULE: All price targets MUST be based on ${current_price:.2f}. If Bullish, target > ${current_price:.2f}.")
-    
+    elif not is_ticker:
+         context_parts.append(f"- NOTE: This is a General Finance Inquiry, not a specific stock ticker analysis.")
+         
     if current_yield:
         context_parts.append(f"- RISK-FREE RATE (10Y Treasury): {current_yield:.2f}%")
         context_parts.append(f"- RULE: Use {current_yield:.2f}% for WACC and Discount Rate calculations.")
@@ -85,106 +89,130 @@ def get_dynamic_prompts(ticker, current_price=None, current_yield=None):
     price_context = "\n".join(context_parts)
     
     prompts = {}
+    
+    sec_instruction = "**SEC EDGAR PROTOCOL (MANDATORY):** Simulate accessing SEC.gov." if is_ticker else "Use general financial knowledge and macroeconomic data sources."
+    val_instruction = "CRITICAL OUTPUT: Markdown Table of Valuation Metrics and JSON CHART DATA." if is_ticker else "Provide relevant quantitative metrics if applicable."
 
     prompts["MACRO"] = f"""
     You are the Macro Council (Voices: Ray Dalio, Stanley Druckenmiller).
     {price_context}
     
-    TASK: Analyze the global macro environment.
-    1. **Step-Back Prompting:** Identify the abstract economic principle governing the current era (e.g., Debt Supercycle).
-    2. **Tree of Thoughts:** Analyze 3 scenarios: Inflation Resurgence, Soft Landing, Deflationary Bust.
-    3. **Macro Drag:** Identify specific headwinds/tailwinds for this sector.
+    FRAMEWORK: Step-Back Prompting + Tree of Thoughts.
+    
+    TASK: Analyze the global macro environment regarding: {subject}.
+    1. **Step-Back Prompting:** First, identify the abstract economic principle governing the current era (e.g., "Debt Supercycle Deleveraging").
+    2. **Tree of Thoughts:** Branch into three scenarios: Inflation Resurgence, Soft Landing, Deflationary Bust.
+    3. **Macro Drag:** Weigh the probability of each to determine specific headwinds (e.g., -15% discount due to rising cost of capital).
     
     OUTPUT FORMAT (Markdown):
     - ## Executive Summary
     - ### Key Indicators (Table)
-    - ### Scenario Analysis
+    - ### Scenario Analysis (Bull/Bear/Base)
     """
 
     prompts["FUNDAMENTAL"] = f"""
-    You are the Fundamental Specialist (Voices: Peter Lynch, Warren Buffett).
+    You are the Fundamental Specialist (Voices: Peter Lynch, Warren Buffett, Michael Porter).
     {price_context}
     
-    TASK: Analyze business health using latest SEC filings.
-    **SEC FORENSICS:** Simulate accessing SEC.gov (10-K/10-Q).
+    FRAMEWORK: ReAct (Reason+Act) + Unit Economics Deep-Dive.
+    
+    TASK: Analyze the fundamentals of: {subject}.
+    {sec_instruction}
+    
+    THOUGHT PROCESS:
+    - "Top-line growth looks good, but is the quality deteriorating?"
+    - Check if CAC is rising faster than LTV (Destructive Growth).
     
     REQUIRED ANALYSES:
-    1. **Unit Economics:** LTV/CAC, Same-Store Sales, Margins.
-    2. **Moat Analysis:** Porter's 5 Forces (Supplier/Buyer Power).
-    3. **Capital Allocation:** Buybacks vs. Empire Building.
-    4. **Beneish M-Score Check:** Look for accounting red flags.
-    5. **Executive Compensation:** Is pay tied to EPS (bad) or ROIC (good)?
+    1. **Unit Economics Check:** Sector-specific efficiency (e.g., Same-Store Sales, Load Factor).
+    2. **Moat Analysis:** Porter's 5 Forces.
+    3. **Capital Allocation Scorecard:** Analyze management's history of Buybacks vs. Dividends vs. Acquisitions.
+    4. **Executive Compensation Audit:** Analyze the Proxy Statement. Is pay tied to EPS (bad) or ROIC (good)?
     
     OUTPUT FORMAT (Markdown):
-    - ## Business Health Analysis
+    - ## Fundamental Analysis
     - ### Unit Economics (Table)
-    - ### Moat & Management
+    - ### Economic Moat & Competitive Advantage
+    - ### Management Scorecard
     """
 
     prompts["CFA"] = f"""
-    You are a CFA Charterholder.
+    You are a CFA Charterholder and Senior Credit Analyst.
     {price_context}
     
-    TASK: Forensic review of the MD&A section.
-    1. **Margin Analysis:** Volume vs. Price drivers?
-    2. **Non-GAAP vs GAAP:** Highlight the "Quality of Earnings" gap.
+    TASK: Conduct a professional forensic review of the MD&A section for: {subject}.
+    FRAMEWORK: Strict Credit Analyst Standard. Do not summarize; identify red flags.
+    
+    ANALYSIS REQUIREMENTS:
+    1. **Margin Analysis:** Volume vs. Price drivers? Pricing power or volume declines?
+    2. **Non-GAAP Reconciliations:** Highlight the gap between Adjusted EBITDA and Net Income (Quality of Earnings).
     3. **Liquidity:** Cash burn, debt covenants, and capital constraints.
     4. **Language Change:** Did tone shift from confident to cautious?
     
     OUTPUT FORMAT (Markdown):
     - ## CFA Analysis: MD&A Review
-    - **Margin Analysis:** [Details]
-    - **Non-GAAP Reconciliations:** [Details]
-    - **Liquidity:** [Details]
+    - **Key Insights:** [Details]
+    - **Risk Factors:** [Details]
     """
 
     prompts["QUANT"] = f"""
-    You are the Quant Desk (Voices: Jim Simons).
+    You are the Quant Desk (Voices: Jim Simons, Nassim Taleb).
     {price_context}
     
-    TASK: Analyze valuation, risk, and sensitivity.
-    1. **Valuation:** Compare P/E, PEG to historicals.
-    2. **Sensitivity:** How does price change if WACC increases by 1%?
-    3. **Stochastic DCF:** Mental Monte Carlo simulation (10k iterations).
-    4. **Kelly Criterion:** Position sizing based on edge.
+    FRAMEWORK: Program-Aided Language (PAL). Do not "guess" math.
     
-    CRITICAL OUTPUT:
-    1. **Markdown Table**: Valuation Metrics.
-    2. **CHART DATA**: Output a JSON block at the very end for Price Targets.
-       Format: {{"Bear": 100, "Base": 150, "Bull": 200}}
+    TASK: Analyze valuation, risk, and sensitivity for: {subject}.
+    {val_instruction}
+    
+    REQUIRED CALCULATIONS:
+    1. **Valuation Risk:** Compare P/E, PEG to historical averages.
+    2. **Stochastic DCF:** Mental Monte Carlo simulation (10k iterations). Report 5th, 50th, 95th percentiles.
+    3. **Kelly Criterion:** Position sizing based on edge (Constraint: Use Half-Kelly for safety).
+    4. **Sensitivity Analysis:** How does price change if WACC increases by 1%?
+    
+    If this is a specific stock, output:
+    1. **Markdown Table**: Valuation Metrics (P/E, PEG, FCF Yield, Beneish M-Score).
+    2. **CHART DATA**: JSON block for Price Targets: {{"Bear": 100, "Base": 150, "Bull": 200}}
+       (Targets MUST reflect the live price of ${current_price if current_price else 'N/A'}).
     """
 
     prompts["RED_TEAM"] = f"""
-    You are the Red Team (Voice: Jim Chanos).
+    You are the Red Team (Voice: Jim Chanos, Gary Klein).
     {price_context}
     
-    TASK: Find fatal flaws.
-    1. **Backward Check:** Reverse-engineer the current price. Is implied growth realistic?
-    2. **The Grey Rhino:** Obvious, high-impact threats ignored by the market.
-    3. **Pre-Mortem:** Assume it is 2030 and the company failed. Write the obituary.
-    4. **SEC Forensics:** Check Legal Proceedings and Related Party Transactions.
+    FRAMEWORK: Forward-Backward Reasoning + Pre-Mortem.
+    
+    TASK: Find fatal flaws, contradictions, and "Grey Rhino" risks in the bullish case for: {subject}.
+    
+    RISK PROTOCOLS:
+    1. **Backward Check:** Reverse-engineer the current price. To justify ${current_price if current_price else 'X'}, what growth is required? Is it realistic?
+    2. **The Grey Rhino:** Identify high-probability, high-impact threats everyone is ignoring (e.g., Debt Maturity Walls).
+    3. **Pre-Mortem:** Assume it is 2030 and the company has failed. Write the obituary explaining exactly why.
+    4. **SEC Forensics:** Check "Legal Proceedings" and "Related Party Transactions".
     
     OUTPUT FORMAT (Markdown):
     - ## Key Investment Risks
-    - ### The Short Case
-    - ### Pre-Mortem
+    - ### The Bear Case
+    - ### Pre-Mortem (The 2030 Obituary)
     """
 
     prompts["PORTFOLIO"] = f"""
-    You are the CIO.
+    You are the CIO (The Chair).
     {price_context}
     
-    TASK: Synthesize final thesis.
-    1. **Executive Thesis:** Chain of Density (high info/word ratio).
-    2. **Variant Perception:** How does your view differ from Consensus?
-    3. **Sell Triggers:** 3 hard rules for selling.
-    4. **Historical Audit:** Would this model have failed in the 2022 crash?
+    FRAMEWORK: Chain of Density + Sell Discipline.
+    
+    TASK: Synthesize final thesis for: {subject}.
+    
+    GRAND UNIFICATION:
+    Compare the Fundamental Core Value vs. Quant Price Targets.
     
     OUTPUT FORMAT (Markdown):
-    - ## Executive Thesis
-    - ### Variant Perception
-    - ### Sell Triggers
-    - ### Final Verdict
+    - ## Executive Thesis (Chain of Density)
+      (Iterative summary maximizing information per word).
+    - ### Variant Perception (Consensus vs Our View)
+    - ### Sell Triggers (3 Hard Rules)
+    - ### Final Verdict (Buy/Sell/Hold & Allocation)
     """
     
     return prompts
@@ -198,7 +226,6 @@ COLOR_GOLD = "#DAA520"
 COLOR_LIGHT_BLUE = "#EBF0F5"
 COLOR_DARK_GREY = "#323232"
 
-# UPDATED CSS: REMOVED BOXES, CLEANER LAYOUT
 STYLE_CSS = f"""
     @page {{
         size: letter;
@@ -218,20 +245,32 @@ STYLE_CSS = f"""
         line-height: 1.6;
         color: {COLOR_DARK_GREY};
     }}
-    /* Force wrapping */
+    
+    /* FORCE WRAPPING FOR ALL TEXT BLOCKS */
     pre, code, p, div, span, li {{
         white-space: pre-wrap !important;
         word-wrap: break-word !important;
+        overflow-wrap: break-word;
         max-width: 100%;
-        font-family: Helvetica, Arial, sans-serif;
+        font-family: Helvetica, Arial, sans-serif; 
         font-size: 11pt;
     }}
+    
     h1 {{
         color: {COLOR_NAVY};
-        font-size: 24pt;
+        font-size: 36pt; /* Larger Ticker */
         font-weight: bold;
         text-align: center;
         margin-bottom: 5px;
+        text-transform: uppercase;
+        letter-spacing: 2px;
+    }}
+    .company-name {{
+        color: {COLOR_NAVY};
+        font-size: 18pt; /* Large Company Name */
+        font-weight: bold;
+        text-align: center;
+        margin-bottom: 30px;
         text-transform: uppercase;
     }}
     h2 {{
@@ -270,7 +309,7 @@ STYLE_CSS = f"""
         background-color: {COLOR_NAVY};
         color: {COLOR_GOLD};
         font-weight: bold;
-        padding: 10px;
+        padding: 8px;
         text-align: center;
         border: 1px solid #ddd;
     }}
@@ -281,26 +320,14 @@ STYLE_CSS = f"""
     }}
     td:first-child {{
         text-align: left;
-        font-weight: bold;
-        color: {COLOR_NAVY};
     }}
     tr:nth-child(even) {{
         background-color: {COLOR_LIGHT_BLUE};
     }}
-    
-    /* EXECUTIVE SECTION - CLEAN STYLE (No Box) */
-    .executive-box {{
+    /* Cleaned Executive Section (No Box, Just Header) */
+    .executive-section {{
         margin-bottom: 30px;
-    }}
-    .executive-title {{
-        color: {COLOR_NAVY}; /* Matches H2 */
-        font-weight: bold;
-        font-size: 16pt;
-        border-bottom: 2px solid {COLOR_GOLD}; /* Matches H2 */
-        padding-bottom: 5px;
-        margin-bottom: 15px;
-        display: block;
-        text-transform: uppercase;
+        padding: 10px 0;
     }}
     
     .disclaimer {{
@@ -320,14 +347,12 @@ STYLE_CSS = f"""
     }}
 """
 
-def generate_pdf_report(ticker, report_data, chart_path=None, return_path=None, return_df=None):
-    # Clean Quant Data
+def generate_pdf_report(title_text, company_name, report_data, chart_path=None, return_path=None, return_df=None):
     quant_text = report_data.get("Quant", "N/A")
     quant_text = re.sub(r'(\*\*CHART DATA\*\*.*?)?\{.*?"Bear".*?"Bull".*?\}', '', quant_text, flags=re.DOTALL | re.IGNORECASE)
     quant_text = re.sub(r'```json', '', quant_text)
     quant_text = re.sub(r'```', '', quant_text)
 
-    # Parse Sections
     pm_html = markdown.markdown(report_data.get("Portfolio Manager", "N/A"), extensions=['extra'])
     macro_html = markdown.markdown(report_data.get("Macro", "N/A"), extensions=['extra'])
     fund_html = markdown.markdown(report_data.get("Fundamental", "N/A"), extensions=['extra'])
@@ -335,15 +360,14 @@ def generate_pdf_report(ticker, report_data, chart_path=None, return_path=None, 
     quant_html = markdown.markdown(quant_text, extensions=['extra'])
     red_html = markdown.markdown(report_data.get("Red Team", "N/A"), extensions=['extra'])
 
-    # Cleaned Executive Section (No Box, just Header)
+    # Cleaned Executive Section (Matches Style)
     sections_html = f"""
-    <div class="executive-box">
-        <span class="executive-title">1. EXECUTIVE THESIS</span>
+    <div class="executive-section">
+        <h2>1. EXECUTIVE THESIS (CHAIN OF DENSITY)</h2>
         {pm_html}
     </div>
     """
     
-    # Standard Sections
     sections_list = [
         ("2. MACRO-ECONOMIC LANDSCAPE", macro_html, None),
         ("3. FUNDAMENTAL DEEP DIVE", fund_html, None),
@@ -357,27 +381,31 @@ def generate_pdf_report(ticker, report_data, chart_path=None, return_path=None, 
         
         if "QUANTITATIVE" in title:
             if img_path:
-                sections_html += f'<div class="chart-container"><h3>Valuation Scenarios (12-Month Targets)</h3><img src="{img_path}" style="width: 15cm;" /></div>'
+                sections_html += f'<div class="chart-container"><h3>Valuation Scenarios</h3><img src="{img_path}" style="width: 15cm;" /></div>'
             if return_path:
-                sections_html += f'<div class="chart-container"><h3>5-Year Total Return Comparison (Growth of $10k)</h3><img src="{return_path}" style="width: 15cm;" /></div>'
+                sections_html += f'<div class="chart-container"><h3>5-Year Performance</h3><img src="{return_path}" style="width: 15cm;" /></div>'
             if return_df is not None:
                 sections_html += f"<h3>Historical Return Data</h3>{return_df.reset_index().to_html(index=False, classes='table')}"
 
     full_html = f"""
     <!DOCTYPE html>
     <html>
-    <head><title>Titan Report - {ticker}</title><style>{STYLE_CSS}</style></head>
+    <head><title>Titan Report</title><style>{STYLE_CSS}</style></head>
     <body>
         <div id="header_content" style="text-align: center; color: {COLOR_NAVY}; font-weight: bold; border-bottom: 2px solid {COLOR_GOLD}; padding-bottom: 5px;">TITAN FINANCIAL ANALYST // EQUITY RESEARCH</div>
         <div id="footer_content" style="text-align: center; color: #888; font-size: 8pt; border-top: 1px solid #ccc; padding-top: 5px;">Strictly Confidential | Generated by Titan AI</div>
-        <div style="text-align: center; margin-top: 100px; margin-bottom: 100px;">
-            <h1>{ticker}</h1>
+        
+        <!-- TITLE PAGE -->
+        <div style="text-align: center; margin-top: 150px; margin-bottom: 150px;">
+            <h1>{title_text}</h1>
+            <div class="company-name">{company_name}</div>
             <div style="font-size: 16pt; color: {COLOR_GOLD}; font-weight: bold; margin-bottom: 20px;">INSTITUTIONAL EQUITY RESEARCH</div>
             <div style="font-size: 12pt; color: #555;">Date: {datetime.now().strftime('%B %d, %Y')}</div>
         </div>
+        
         <pdf:nextpage />
         {sections_html}
-        <div class="disclaimer"><strong>IMPORTANT DISCLOSURES & DISCLAIMER</strong><br>This report is generated by an AI system (Titan Analyst) and is for informational purposes only. It does not constitute financial advice.</div>
+        <div class="disclaimer"><strong>IMPORTANT DISCLOSURES</strong><br>This report is generated by AI (Titan Analyst) and is for informational purposes only.</div>
     </body>
     </html>
     """
@@ -490,22 +518,26 @@ async def run_agent(name, prompt, content):
             continue
     return name, f"Analysis Failed for {name}."
 
-async def run_analysis(ticker):
-    clean_ticker = normalize_ticker(ticker)
+async def run_analysis(user_input):
+    market_data = fetch_market_data(user_input)
+    is_ticker = market_data["is_valid_ticker"]
     
-    # 1. FETCH DATA (Price + Yield)
-    market_data = fetch_market_data(clean_ticker)
-    current_price = market_data["price"]
-    current_yield = market_data["yield"]
-    
-    # 2. GENERATE PROMPTS
-    prompts = get_dynamic_prompts(clean_ticker, current_price, current_yield)
+    if is_ticker:
+        subject = normalize_ticker(user_input)
+        current_price = market_data["price"]
+        current_yield = market_data["yield"]
+    else:
+        subject = user_input # Use full question
+        current_price = None
+        current_yield = market_data["yield"]
+        
+    prompts = get_dynamic_prompts(subject, current_price, current_yield, is_ticker)
     
     tasks = [
-        run_agent("Macro", prompts["MACRO"], clean_ticker),
-        run_agent("Fundamental", prompts["FUNDAMENTAL"], clean_ticker),
-        run_agent("CFA", prompts["CFA"], clean_ticker),
-        run_agent("Quant", prompts["QUANT"], clean_ticker)
+        run_agent("Macro", prompts["MACRO"], subject),
+        run_agent("Fundamental", prompts["FUNDAMENTAL"], subject),
+        run_agent("CFA", prompts["CFA"], subject),
+        run_agent("Quant", prompts["QUANT"], subject)
     ]
     results = await asyncio.gather(*tasks)
     data = {k: v for k, v in results}
@@ -525,18 +557,21 @@ async def run_analysis(ticker):
     _, data["Portfolio Manager"] = await run_agent("Portfolio Manager", prompts["PORTFOLIO"], combined_reports)
     
     data["_current_price"] = current_price
+    data["_subject"] = subject
+    data["_is_ticker"] = is_ticker
+    data["_company_name"] = market_data.get("name", subject)
     return data
 
 # --- 7. UI ---
 def main():
-    st.set_page_config(page_title="Titan 2.0", layout="wide")
-    st.title("⚡ Titan Analyst 2.0")
+    st.set_page_config(page_title="Titan 2.5", layout="wide")
+    st.title("⚡ Titan Analyst 2.5")
     
     if "report" not in st.session_state: st.session_state.report = None
     if "history" not in st.session_state: st.session_state.history = []
 
     with st.form(key='analysis_form'):
-        user_input = st.text_input("Enter Ticker:", "NVDA")
+        user_input = st.text_input("Enter Ticker or Question:", "NVDA")
         submit_button = st.form_submit_button(label='Run Analysis')
     
     if submit_button:
@@ -558,11 +593,14 @@ def main():
                 st.subheader("🏆 Executive Thesis")
                 st.info(rpt.get("Portfolio Manager"))
             with c2:
-                st.subheader("🎯 12-Month Targets")
-                chart_data = extract_chart_data(rpt.get("Quant", ""))
-                chart_data = verify_and_correct_targets(chart_data, rpt.get("_current_price"))
-                if chart_data: st.bar_chart(chart_data)
-                else: st.caption("No targets found.")
+                if rpt.get("_is_ticker"):
+                    st.subheader("🎯 12-Month Targets")
+                    chart_data = extract_chart_data(rpt.get("Quant", ""))
+                    chart_data = verify_and_correct_targets(chart_data, rpt.get("_current_price"))
+                    if chart_data: st.bar_chart(chart_data)
+                    else: st.caption("No targets found.")
+                else:
+                    st.info("General Analysis Mode (No Price Targets)")
 
             t1, t2, t3, t4, t5 = st.tabs(["Macro", "Fundamental", "CFA", "Quant", "Red Team"])
             with t1: st.markdown(rpt.get("Macro", ""))
@@ -570,21 +608,32 @@ def main():
             with t3: st.markdown(rpt.get("CFA", ""))
             with t4: 
                 st.markdown(rpt.get("Quant", ""))
-                st.divider()
-                st.subheader("📈 5-Year Relative Return")
-                ret_data = fetch_relative_returns(user_input)
-                if ret_data is not None: st.line_chart(ret_data)
+                if rpt.get("_is_ticker"):
+                    st.divider()
+                    st.subheader("📈 5-Year Relative Return")
+                    ret_data = fetch_relative_returns(rpt["_subject"])
+                    if ret_data is not None: st.line_chart(ret_data)
             with t5: st.error(rpt.get("Red Team", ""))
             
             st.divider()
             try:
-                c_path = generate_bar_chart(chart_data, "Price Targets") if chart_data else None
-                r_data = fetch_relative_returns(user_input)
-                r_path = generate_line_chart(r_data, "5-Year Total Return vs Benchmark") if r_data is not None else None
+                c_path = None
+                r_path = None
+                r_data = None
                 
-                clean_ticker = normalize_ticker(user_input)
-                pdf_bytes = generate_pdf_report(clean_ticker, rpt, chart_path=c_path, return_path=r_path)
-                st.download_button("📄 Download Professional Report (PDF)", pdf_bytes, f"{clean_ticker}_Titan_Report.pdf", "application/pdf")
+                if rpt.get("_is_ticker"):
+                    c_data = extract_chart_data(rpt.get("Quant", ""))
+                    c_path = generate_bar_chart(c_data, "Price Targets") if c_data else None
+                    r_data = fetch_relative_returns(rpt["_subject"])
+                    r_path = generate_line_chart(r_data, "5-Year Total Return vs Benchmark") if r_data is not None else None
+                
+                report_title = rpt["_subject"]
+                company_name = rpt.get("_company_name", report_title)
+                
+                pdf_bytes = generate_pdf_report(report_title, company_name, rpt, chart_path=c_path, return_path=r_path, return_df=r_data)
+                
+                file_label = re.sub(r'[^A-Za-z0-9]', '_', rpt["_subject"])[:15]
+                st.download_button("📄 Download Professional Report (PDF)", pdf_bytes, f"{file_label}_Titan_Report.pdf", "application/pdf")
             except Exception as e:
                 st.error(f"PDF Gen Error: {e}")
 
