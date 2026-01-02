@@ -93,9 +93,9 @@ TASK: Analyze valuation, risk, and sensitivity.
 
 **CRITICAL OUTPUT:**
 1. **Markdown Table**: Valuation Metrics (P/E, PEG, FCF Yield).
-2. **CHART DATA** (Price Targets). Format exactly like this:
+2. **CHART DATA** (Price Targets). Output a JSON block at the end (Do not use Markdown blocks):
    {"Bear": 100, "Base": 150, "Bull": 200}
-3. **RETURN DATA** (5-Year Comparison vs SPY). Output a JSON block:
+3. **RETURN DATA** (5-Year Comparison vs SPY). Output a JSON block at the end (Do not use Markdown blocks):
    {"Years": ["2020", "2021", "2022", "2023", "2024"], "Ticker": [10, 20, -5, 15, 30], "SPY": [15, 25, -18, 24, 12]}
 """
 
@@ -132,32 +132,38 @@ You are a Research Assistant. Answer user questions based ONLY on the provided r
 # --- 3. GRAPHIC DESIGN ENGINE (Titan Professional PDF - HTML/CSS) ---
 
 def generate_pdf_report(ticker, report_data, chart_path=None, return_path=None, return_df=None):
-    # 1. Prepare HTML Content
-    
-    # Convert Markdown to HTML
+    # 1. Clean JSON artifacts from Quant text so they don't print as raw text
+    quant_text = report_data.get("Quant", "N/A")
+    # Remove Price Targets JSON block
+    quant_text = re.sub(r'(\*\*CHART DATA\*\*.*?)?\{.*?"Bear".*?"Bull".*?\}', '', quant_text, flags=re.DOTALL | re.IGNORECASE)
+    # Remove Return Data JSON block
+    quant_text = re.sub(r'(\*\*RETURN DATA\*\*.*?)?\{.*?"Years".*?"SPY".*?\}', '', quant_text, flags=re.DOTALL | re.IGNORECASE)
+    # Clean up leftover markdown formatting
+    quant_text = re.sub(r'```json', '', quant_text)
+    quant_text = re.sub(r'```', '', quant_text)
+
+    # 2. Prepare HTML Content
     pm_html = markdown.markdown(report_data.get("Portfolio Manager", "N/A"), extensions=['tables'])
     macro_html = markdown.markdown(report_data.get("Macro", "N/A"), extensions=['tables'])
     fund_html = markdown.markdown(report_data.get("Fundamental", "N/A"), extensions=['tables'])
-    quant_html = markdown.markdown(report_data.get("Quant", "N/A"), extensions=['tables'])
+    quant_html = markdown.markdown(quant_text, extensions=['tables'])
     red_html = markdown.markdown(report_data.get("Red Team", "N/A"), extensions=['tables'])
     
-    # Prepare Images
+    # Prepare Images HTML
     chart_html = ""
     if chart_path:
-        # Use file protocol for local images if needed, but xhtml2pdf handles paths
         chart_html += f'<div class="chart-container"><h3>Valuation Scenarios (12-Month Targets)</h3><img src="{chart_path}" style="width: 15cm;" /></div>'
     
     if return_path:
         chart_html += f'<div class="chart-container"><h3>5-Year Total Return Comparison (Growth of $10k)</h3><img src="{return_path}" style="width: 15cm;" /></div>'
         
-    # Prepare Data Table
+    # Prepare Data Table HTML
     table_html = ""
     if return_df is not None:
-        # Simple HTML table for the return data
-        table_html = f"<h3>Historical Return Data</h3>{return_df.reset_index().to_html(index=False)}"
+        # Convert DataFrame to HTML table with specific styling class
+        table_html = f"<h3>Historical Return Data</h3>{return_df.reset_index().to_html(index=False, classes='titan-table')}"
 
-    # 2. Construct Full HTML Document with CSS
-    # Using @frame for static headers/footers to avoid NotImplementedError in older reportlab/xhtml2pdf combos
+    # 3. Construct Full HTML Document with CSS
     html_template = f"""
     <!DOCTYPE html>
     <html>
@@ -252,6 +258,8 @@ def generate_pdf_report(ticker, report_data, chart_path=None, return_path=None, 
                 padding: 8px;
                 border-bottom: 1pt solid #dddddd;
             }}
+            /* Specific class for Pandas tables if needed */
+            .titan-table th {{ background-color: #0A1932; color: #DAA520; }}
             
             .disclaimer {{
                 font-size: 8pt;
@@ -264,6 +272,10 @@ def generate_pdf_report(ticker, report_data, chart_path=None, return_path=None, 
             .chart-container {{
                 text-align: center;
                 margin: 20px 0;
+            }}
+            img {{
+                max-width: 100%;
+                height: auto;
             }}
         </style>
     </head>
@@ -310,7 +322,7 @@ def generate_pdf_report(ticker, report_data, chart_path=None, return_path=None, 
     </html>
     """
     
-    # 3. Generate PDF
+    # 4. Generate PDF
     pdf_file = BytesIO()
     pisa_status = pisa.CreatePDF(
         src=html_template,
@@ -327,8 +339,8 @@ def generate_bar_chart(data_dict, title):
     try:
         fig, ax = plt.subplots(figsize=(10, 6), dpi=300)
         # Use Titan Colors: Navy for bars, Gold for highlight if needed
-        bars = ax.bar(data_dict.keys(), data_dict.values(), color=HEX_NAVY)
-        ax.set_title(title, fontsize=14, fontweight='bold', color=HEX_NAVY)
+        bars = ax.bar(data_dict.keys(), data_dict.values(), color='#0A1932')
+        ax.set_title(title, fontsize=14, fontweight='bold', color='#0A1932')
         ax.set_ylabel('Price ($)', fontsize=12)
         ax.grid(axis='y', linestyle='--', alpha=0.5)
         
@@ -336,7 +348,7 @@ def generate_bar_chart(data_dict, title):
         for bar in bars:
             height = bar.get_height()
             ax.text(bar.get_x() + bar.get_width()/2., height, f'${height:,.0f}', 
-                    ha='center', va='bottom', fontsize=12, fontweight='bold', color=HEX_GOLD)
+                    ha='center', va='bottom', fontsize=12, fontweight='bold', color='#DAA520')
         
         plt.tight_layout()
         with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
@@ -349,12 +361,12 @@ def generate_line_chart(df, title):
     try:
         fig, ax = plt.subplots(figsize=(10, 6), dpi=300)
         # Plot lines with Titan Colors
-        colors = [HEX_NAVY, HEX_GOLD, 'grey']
+        colors = ['#0A1932', '#DAA520', 'grey']
         for i, col in enumerate(df.columns):
             color = colors[i % len(colors)]
             ax.plot(df.index, df[col], marker='o', linewidth=2, label=col, color=color)
             
-        ax.set_title(title, fontsize=14, fontweight='bold', color=HEX_NAVY)
+        ax.set_title(title, fontsize=14, fontweight='bold', color='#0A1932')
         ax.legend(fontsize=10)
         ax.grid(True, linestyle='--', alpha=0.5)
         plt.xticks(rotation=45)
@@ -404,7 +416,7 @@ async def run_agent(name, prompt, content):
         except Exception as e:
             if "429" in str(e):
                 await asyncio.sleep(15)
-            # Fallback
+            # Fallback (Simulate without tools if tool failure)
             try:
                 model_pure = genai.GenerativeModel(model_name, safety_settings=SAFETY_SETTINGS)
                 response = await asyncio.wait_for(model_pure.generate_content_async(f"{prompt}\nCONTEXT: {content}"), timeout=90.0)
@@ -490,7 +502,7 @@ def main():
                 if pdf_bytes:
                     st.download_button("📄 Download Professional Report (PDF)", pdf_bytes, f"{ticker}_Titan_Report.pdf", "application/pdf")
                 else:
-                    st.error("PDF generation failed.")
+                    st.error("PDF Generation Failed (Unknown Error)")
             except Exception as e:
                 st.error(f"PDF Gen Error: {e}")
 
