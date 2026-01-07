@@ -14,8 +14,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 import tempfile
 import yfinance as yf
-import markdown
-from xhtml2pdf import pisa
+from fpdf import FPDF 
 from io import BytesIO
 
 # 1. SETUP
@@ -33,7 +32,8 @@ client = genai.Client(api_key=api_key)
 
 # Model Priority: STRICT MODE - GEMINI 3 PRO PREVIEW
 MODELS = [
-    "gemini-3-pro-preview"
+    "gemini-2.0-flash-exp", # Fallback if pro preview fails
+    "gemini-1.5-pro"
 ]
 
 # --- 2. DYNAMIC PROMPT GENERATION ---
@@ -56,9 +56,8 @@ def fetch_market_data(ticker):
         hist = stock.history(period="5d")
         
         if not hist.empty:
-            data_pkg["price"] = hist['Close'].iloc[-1]
+            data_pkg["price"] = float(hist['Close'].iloc[-1])
             data_pkg["is_valid_ticker"] = True
-            # Get Company Name
             try:
                 info = stock.info
                 data_pkg["name"] = info.get('longName', clean_ticker)
@@ -68,7 +67,7 @@ def fetch_market_data(ticker):
         # Always fetch Treasury Yield for macro context
         treasury_data = yf.Ticker("^TNX").history(period="5d")
         if not treasury_data.empty:
-            data_pkg["yield"] = treasury_data['Close'].iloc[-1]
+            data_pkg["yield"] = float(treasury_data['Close'].iloc[-1])
             
     except:
         pass
@@ -84,13 +83,13 @@ def get_dynamic_prompts(subject, current_price=None, current_yield=None, is_tick
         f"- Subject of Analysis: {subject}"
     ]
     
-    if is_ticker and current_price:
+    if is_ticker and current_price is not None:
         context_parts.append(f"- CURRENT LIVE PRICE: ${current_price:.2f}")
         context_parts.append(f"- RULE: All price targets MUST be based on ${current_price:.2f}. If Bullish, target > ${current_price:.2f}.")
     elif not is_ticker:
          context_parts.append(f"- NOTE: This is a General Finance Inquiry, not a specific stock ticker analysis.")
          
-    if current_yield:
+    if current_yield is not None:
         context_parts.append(f"- RISK-FREE RATE (10Y Treasury): {current_yield:.2f}%")
         context_parts.append(f"- RULE: Use {current_yield:.2f}% for WACC and Discount Rate calculations.")
         
@@ -110,10 +109,10 @@ def get_dynamic_prompts(subject, current_price=None, current_yield=None, is_tick
     2. **Tree of Thoughts:** Analyze 3 scenarios: Inflation Resurgence, Soft Landing, Deflationary Bust.
     3. **Macro Drag:** Identify specific headwinds/tailwinds.
     
-    OUTPUT FORMAT (Markdown):
-    - ## Executive Summary
-    - ### Key Indicators (Table)
-    - ### Scenario Analysis
+    OUTPUT FORMAT (Text/Markdown):
+    - Executive Summary
+    - Key Indicators
+    - Scenario Analysis
     """
 
     prompts["FUNDAMENTAL"] = f"""
@@ -129,11 +128,11 @@ def get_dynamic_prompts(subject, current_price=None, current_yield=None, is_tick
     3. **Capital Allocation:** Buybacks vs. Empire Building.
     4. **Executive Compensation:** Is pay tied to EPS (bad) or ROIC (good)?
     
-    OUTPUT FORMAT (Markdown):
-    - ## Fundamental Analysis
-    - ### Unit Economics (Table)
-    - ### Economic Moat & Competitive Advantage
-    - ### Management Scorecard
+    OUTPUT FORMAT (Text/Markdown):
+    - Fundamental Analysis
+    - Unit Economics
+    - Economic Moat & Competitive Advantage
+    - Management Scorecard
     """
 
     prompts["CFA"] = f"""
@@ -143,10 +142,10 @@ def get_dynamic_prompts(subject, current_price=None, current_yield=None, is_tick
     TASK: Conduct a professional credit/financial analysis of: {subject}.
     Focus on Risks, Margins, Liquidity, and Quality of Earnings/Data.
     
-    OUTPUT FORMAT (Markdown):
-    - ## CFA Analysis
-    - **Key Insights:** [Details]
-    - **Risk Factors:** [Details]
+    OUTPUT FORMAT (Text/Markdown):
+    - CFA Analysis
+    - Key Insights
+    - Risk Factors
     """
 
     prompts["QUANT"] = f"""
@@ -163,7 +162,7 @@ def get_dynamic_prompts(subject, current_price=None, current_yield=None, is_tick
     4. **Beneish M-Score:** Check for earnings manipulation flags.
     
     If this is a specific stock, output:
-    1. **Markdown Table**: Valuation Metrics (P/E, PEG, FCF Yield, Beneish M-Score).
+    1. **Text Analysis**: Valuation Metrics (P/E, PEG, FCF Yield, Beneish M-Score).
     2. **CHART DATA**: JSON block for Price Targets: {{"Bear": 100, "Base": 150, "Bull": 200}}
     """
 
@@ -179,10 +178,10 @@ def get_dynamic_prompts(subject, current_price=None, current_yield=None, is_tick
     3. **Pre-Mortem:** Assume it is 2030 and the company has failed. Write the obituary explaining exactly why.
     4. **SEC Forensics:** Check "Legal Proceedings" for hidden risks.
     
-    OUTPUT FORMAT (Markdown):
-    - ## Key Investment Risks
-    - ### The Bear Case
-    - ### Pre-Mortem
+    OUTPUT FORMAT (Text/Markdown):
+    - Key Investment Risks
+    - The Bear Case
+    - Pre-Mortem
     """
 
     prompts["PORTFOLIO"] = f"""
@@ -194,212 +193,180 @@ def get_dynamic_prompts(subject, current_price=None, current_yield=None, is_tick
     GRAND UNIFICATION:
     Compare the Fundamental Core Value vs. Quant Price Targets.
     
-    OUTPUT FORMAT (Markdown):
-    - ## Executive Thesis (Chain of Density)
-    - ### Variant Perception
-    - ### Sell Triggers
-    - ### Final Verdict
+    OUTPUT FORMAT (Text/Markdown):
+    - Executive Thesis (Chain of Density)
+    - Variant Perception
+    - Sell Triggers
+    - Final Verdict
     """
     
     return prompts
 
 FOLLOWUP_PROMPT = "You are a Research Assistant. Answer user questions based ONLY on the provided report context."
 
-# --- 3. GRAPHIC DESIGN ENGINE (HTML/CSS -> PDF) ---
+# --- 3. FPDF2 REPORT ENGINE (LEGACY COMPATIBLE) ---
 
-COLOR_NAVY = "#0A1932"
-COLOR_GOLD = "#DAA520"
-COLOR_LIGHT_BLUE = "#EBF0F5"
-COLOR_DARK_GREY = "#323232"
+class PDFReport(FPDF):
+    def header(self):
+        # Logo or Header Text
+        self.set_font('Helvetica', 'B', 10)
+        self.set_text_color(10, 25, 50) # Navy
+        # ln=1 moves to the next line
+        self.cell(0, 10, 'TITAN FINANCIAL ANALYST // EQUITY RESEARCH', border=False, align='C', ln=1)
+        
+        # Gold underline
+        self.set_draw_color(218, 165, 32) # Gold
+        self.set_line_width(0.5)
+        self.line(self.l_margin, self.get_y(), self.w - self.r_margin, self.get_y())
+        self.ln(5)
 
-STYLE_CSS = f"""
-    @page {{
-        size: letter;
-        margin: 2cm;
-        @frame header_frame {{
-            -pdf-frame-content: header_content;
-            left: 50pt; width: 512pt; top: 30pt; height: 40pt;
-        }}
-        @frame footer_frame {{
-            -pdf-frame-content: footer_content;
-            left: 50pt; width: 512pt; top: 750pt; height: 20pt;
-        }}
-    }}
-    body {{
-        font-family: Helvetica, Arial, sans-serif;
-        font-size: 11pt;
-        line-height: 1.6;
-        color: {COLOR_DARK_GREY};
-    }}
-    
-    /* FORCE WRAPPING FOR ALL TEXT BLOCKS */
-    pre, code, p, div, span, li {{
-        white-space: pre-wrap !important;
-        word-wrap: break-word !important;
-        overflow-wrap: break-word;
-        max-width: 100%;
-        font-family: Helvetica, Arial, sans-serif; 
-        font-size: 11pt;
-    }}
-    
-    h1 {{
-        color: {COLOR_NAVY};
-        font-size: 36pt; /* Larger Ticker */
-        font-weight: bold;
-        text-align: center;
-        margin-bottom: 5px;
-        text-transform: uppercase;
-        letter-spacing: 2px;
-    }}
-    .company-name {{
-        color: {COLOR_NAVY};
-        font-size: 18pt; /* Large Company Name */
-        font-weight: bold;
-        text-align: center;
-        margin-bottom: 30px;
-        text-transform: uppercase;
-    }}
-    h2 {{
-        color: {COLOR_NAVY};
-        font-size: 16pt;
-        border-bottom: 2px solid {COLOR_GOLD};
-        padding-bottom: 5px;
-        margin-top: 30px;
-        text-transform: uppercase;
-        font-weight: bold;
-    }}
-    h3 {{
-        color: {COLOR_NAVY};
-        font-size: 13pt;
-        margin-top: 20px;
-        font-weight: bold;
-    }}
-    blockquote {{
-        background-color: #f9f9f9;
-        border-left: 5px solid {COLOR_NAVY};
-        margin: 1.5em 10px;
-        padding: 0.5em 10px;
-        font-style: italic;
-        color: #555;
-    }}
-    
-    /* TABLE STYLING */
-    table {{
-        width: 100%;
-        border-collapse: collapse;
-        margin: 20px 0;
-        font-size: 10pt;
-        border: 1px solid #ddd;
-    }}
-    th {{
-        background-color: {COLOR_NAVY};
-        color: {COLOR_GOLD};
-        font-weight: bold;
-        padding: 8px;
-        text-align: center;
-        border: 1px solid #ddd;
-    }}
-    td {{
-        padding: 8px;
-        border: 1px solid #ddd;
-        text-align: right;
-    }}
-    td:first-child {{
-        text-align: left;
-    }}
-    tr:nth-child(even) {{
-        background-color: {COLOR_LIGHT_BLUE};
-    }}
-    /* Cleaned Executive Section (No Box, Just Header) */
-    .executive-section {{
-        margin-bottom: 30px;
-        padding: 10px 0;
-    }}
-    
-    .disclaimer {{
-        font-size: 8pt;
-        color: #888;
-        margin-top: 50px;
-        border-top: 1px solid #ccc;
-        padding-top: 10px;
-    }}
-    .chart-container {{
-        text-align: center;
-        margin: 20px 0;
-    }}
-    img {{
-        max-width: 100%;
-        height: auto;
-    }}
-"""
+    def footer(self):
+        self.set_y(-15)
+        self.set_font('Helvetica', 'I', 8)
+        self.set_text_color(128, 128, 128)
+        self.cell(0, 10, f'Strictly Confidential | Generated by Titan AI | Page {self.page_no()}', align='C')
+
+    def chapter_title(self, label):
+        self.set_font('Helvetica', 'B', 14)
+        self.set_text_color(10, 25, 50) # Navy
+        self.cell(0, 10, label, ln=1)
+        
+        # Gold underline for section
+        self.set_draw_color(218, 165, 32)
+        self.line(self.l_margin, self.get_y(), self.w - self.r_margin, self.get_y())
+        self.ln(5)
+
+    def chapter_body(self, text):
+        self.set_font('Helvetica', '', 11)
+        self.set_text_color(50, 50, 50)
+        # Sanitize text for Latin-1 (standard PDF font encoding)
+        clean_text = text.encode('latin-1', 'replace').decode('latin-1')
+        self.multi_cell(0, 6, clean_text)
+        self.ln()
 
 def generate_pdf_report(title_text, company_name, report_data, chart_path=None, return_path=None, return_df=None):
-    quant_text = report_data.get("Quant", "N/A")
+    pdf = PDFReport()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    
+    # --- TITLE PAGE ---
+    pdf.add_page()
+    pdf.ln(60)
+    pdf.set_font('Helvetica', 'B', 24)
+    pdf.set_text_color(10, 25, 50)
+    pdf.multi_cell(0, 15, title_text.upper(), align='C')
+    
+    pdf.ln(10)
+    pdf.set_font('Helvetica', 'B', 16)
+    # Using ln=1 instead of new_x/new_y for compatibility
+    pdf.cell(0, 10, company_name.upper(), align='C', ln=1)
+    
+    pdf.ln(20)
+    pdf.set_font('Helvetica', 'B', 12)
+    pdf.set_text_color(218, 165, 32) # Gold
+    pdf.cell(0, 10, "INSTITUTIONAL EQUITY RESEARCH", align='C', ln=1)
+    
+    pdf.set_font('Helvetica', '', 10)
+    pdf.set_text_color(100, 100, 100)
+    pdf.cell(0, 10, f"Date: {datetime.now().strftime('%B %d, %Y')}", align='C', ln=1)
+    
+    # --- CONTENT SECTIONS ---
+    
+    # Clean text helper (removes markdown bolding ** for PDF legibility)
+    def clean_md(text):
+        if not text: return "N/A"
+        text = text.replace('**', '').replace('##', '').replace('###', '')
+        return text
+
+    # 1. Executive
+    pdf.add_page()
+    pdf.chapter_title("1. EXECUTIVE THESIS")
+    pdf.chapter_body(clean_md(report_data.get("Portfolio Manager", "")))
+    
+    # 2. Macro
+    pdf.chapter_title("2. MACRO-ECONOMIC LANDSCAPE")
+    pdf.chapter_body(clean_md(report_data.get("Macro", "")))
+    
+    # 3. Fundamental
+    pdf.add_page()
+    pdf.chapter_title("3. FUNDAMENTAL DEEP DIVE")
+    pdf.chapter_body(clean_md(report_data.get("Fundamental", "")))
+
+    # 4. CFA
+    pdf.chapter_title("4. CFA ANALYSIS")
+    pdf.chapter_body(clean_md(report_data.get("CFA", "")))
+
+    # 5. Quant (Text + Charts)
+    pdf.add_page()
+    pdf.chapter_title("5. QUANTITATIVE & RISK")
+    
+    # Remove JSON chart data from text before printing
+    quant_text = report_data.get("Quant", "")
     quant_text = re.sub(r'(\*\*CHART DATA\*\*.*?)?\{.*?"Bear".*?"Bull".*?\}', '', quant_text, flags=re.DOTALL | re.IGNORECASE)
     quant_text = re.sub(r'```json', '', quant_text)
     quant_text = re.sub(r'```', '', quant_text)
-
-    pm_html = markdown.markdown(report_data.get("Portfolio Manager", "N/A"), extensions=['extra'])
-    macro_html = markdown.markdown(report_data.get("Macro", "N/A"), extensions=['extra'])
-    fund_html = markdown.markdown(report_data.get("Fundamental", "N/A"), extensions=['extra'])
-    cfa_html = markdown.markdown(report_data.get("CFA", "N/A"), extensions=['extra'])
-    quant_html = markdown.markdown(quant_text, extensions=['extra'])
-    red_html = markdown.markdown(report_data.get("Red Team", "N/A"), extensions=['extra'])
-
-    # Cleaned Executive Section (Matches Style)
-    sections_html = f"""
-    <div class="executive-section">
-        <h2>1. EXECUTIVE THESIS (CHAIN OF DENSITY)</h2>
-        {pm_html}
-    </div>
-    """
     
-    sections_list = [
-        ("2. MACRO-ECONOMIC LANDSCAPE", macro_html, None),
-        ("3. FUNDAMENTAL DEEP DIVE", fund_html, None),
-        ("4. CFA ANALYSIS: MD&A REVIEW", cfa_html, None),
-        ("5. QUANTITATIVE & RISK ANALYSIS", quant_html, chart_path),
-        ("6. KEY RISKS (RED TEAM VERDICT)", red_html, None)
-    ]
-    
-    for title, html_content, img_path in sections_list:
-        sections_html += f"<h2>{title}</h2>{html_content}"
-        
-        if "QUANTITATIVE" in title:
-            if img_path:
-                sections_html += f'<div class="chart-container"><h3>Valuation Scenarios</h3><img src="{img_path}" style="width: 15cm;" /></div>'
-            if return_path:
-                sections_html += f'<div class="chart-container"><h3>5-Year Performance</h3><img src="{return_path}" style="width: 15cm;" /></div>'
-            if return_df is not None:
-                sections_html += f"<h3>Historical Return Data</h3>{return_df.reset_index().to_html(index=False, classes='table')}"
+    pdf.chapter_body(clean_md(quant_text))
 
-    full_html = f"""
-    <!DOCTYPE html>
-    <html>
-    <head><title>Titan Report</title><style>{STYLE_CSS}</style></head>
-    <body>
-        <div id="header_content" style="text-align: center; color: {COLOR_NAVY}; font-weight: bold; border-bottom: 2px solid {COLOR_GOLD}; padding-bottom: 5px;">TITAN FINANCIAL ANALYST // EQUITY RESEARCH</div>
-        <div id="footer_content" style="text-align: center; color: #888; font-size: 8pt; border-top: 1px solid #ccc; padding-top: 5px;">Strictly Confidential | Generated by Titan AI</div>
+    if chart_path:
+        pdf.ln(5)
+        pdf.set_font('Helvetica', 'B', 11)
+        pdf.cell(0, 10, "Valuation Scenarios (12mo Targets)", ln=1)
+        try:
+            # Centering image
+            img_w = 150
+            x_pos = (pdf.w - img_w) / 2
+            pdf.image(chart_path, x=x_pos, w=img_w)
+            pdf.ln(5)
+        except:
+            pdf.cell(0, 10, "[Chart Generation Error]", ln=1)
+
+    if return_path:
+        pdf.ln(5)
+        pdf.set_font('Helvetica', 'B', 11)
+        pdf.cell(0, 10, "5-Year Relative Performance", ln=1)
+        try:
+            img_w = 150
+            x_pos = (pdf.w - img_w) / 2
+            pdf.image(return_path, x=x_pos, w=img_w)
+            pdf.ln(10)
+        except: pass
+
+    # Table for Returns
+    if return_df is not None:
+        pdf.ln(5)
+        pdf.set_font('Helvetica', 'B', 10)
+        pdf.cell(0, 8, "Historical Return Data (Relative)", ln=1)
         
-        <!-- TITLE PAGE -->
-        <div style="text-align: center; margin-top: 150px; margin-bottom: 150px;">
-            <h1>{title_text}</h1>
-            <div class="company-name">{company_name}</div>
-            <div style="font-size: 16pt; color: {COLOR_GOLD}; font-weight: bold; margin-bottom: 20px;">INSTITUTIONAL EQUITY RESEARCH</div>
-            <div style="font-size: 12pt; color: #555;">Date: {datetime.now().strftime('%B %d, %Y')}</div>
-        </div>
+        pdf.set_font('Courier', '', 9) # Monospace for table alignment
         
-        <pdf:nextpage />
-        {sections_html}
-        <div class="disclaimer"><strong>IMPORTANT DISCLOSURES</strong><br>This report is generated by AI (Titan Analyst) and is for informational purposes only.</div>
-    </body>
-    </html>
-    """
-    
-    pdf_file = BytesIO()
-    pisa_status = pisa.CreatePDF(src=full_html, dest=pdf_file)
-    if pisa_status.err: return None
-    return pdf_file.getvalue()
+        # Header
+        col_w = 40
+        # Reset index to get Date column
+        df_reset = return_df.reset_index()
+        # Convert date to string
+        df_reset.iloc[:, 0] = df_reset.iloc[:, 0].astype(str).str.slice(0, 10)
+        
+        # Simple list print for robustness (PDF tables are complex)
+        headers = list(df_reset.columns)
+        header_str = " | ".join(headers)
+        pdf.cell(0, 6, header_str, ln=1)
+        pdf.line(pdf.l_margin, pdf.get_y(), pdf.w - pdf.r_margin, pdf.get_y())
+        
+        # Rows (Show last 10 entries to save space)
+        subset = df_reset.tail(15) 
+        for index, row in subset.iterrows():
+            row_vals = [f"{str(val)[:10]}" for val in row.values]
+            row_str = " | ".join(row_vals)
+            pdf.cell(0, 6, row_str, ln=1)
+
+    # 6. Red Team
+    pdf.add_page()
+    pdf.chapter_title("6. KEY RISKS (RED TEAM VERDICT)")
+    pdf.set_text_color(150, 0, 0) # Dark Red for warnings
+    pdf.chapter_body(clean_md(report_data.get("Red Team", "")))
+
+    # Output
+    return pdf.output(dest='S').encode('latin-1')
 
 # --- 4. CHART GENERATORS ---
 HEX_NAVY = '#0A1932'
@@ -407,6 +374,7 @@ HEX_GOLD = '#DAA520'
 
 def generate_bar_chart(data_dict, title):
     try:
+        if not data_dict: return None
         plt.clf()
         fig, ax = plt.subplots(figsize=(10, 6), dpi=300)
         bars = ax.bar(data_dict.keys(), data_dict.values(), color=HEX_NAVY)
@@ -450,14 +418,15 @@ def generate_line_chart(df, title):
 def fetch_relative_returns(ticker, benchmark="SPY"):
     try:
         clean_ticker = normalize_ticker(ticker)
-        # Check if valid
-        data = yf.download(clean_ticker, period="5y", progress=False)['Close']
-        if data is None or data.empty: return None
-
         tickers = [clean_ticker, benchmark]
         data = yf.download(tickers, period="5y", progress=False)['Close']
+        if data is None or data.empty: return None
+        
+        # Ensure numeric type for safe plotting/math
+        data = data.apply(pd.to_numeric, errors='coerce')
         aligned_data = data.dropna()
         if aligned_data.empty: return None
+        
         normalized = (aligned_data / aligned_data.iloc[0]) - 1
         return normalized
     except: return None
@@ -478,21 +447,18 @@ def verify_and_correct_targets(chart_data, current_price):
     try:
         current_price_val = float(current_price) 
         bull_target = float(chart_data.get("Bull", 0))
-        if bull_target < current_price_val:
+        # Ensure we are comparing numbers, not None types
+        if bull_target > 0 and bull_target < current_price_val:
             chart_data["Bear"] = round(current_price_val * 0.80, 2)
             chart_data["Base"] = round(current_price_val * 1.10, 2)
             chart_data["Bull"] = round(current_price_val * 1.30, 2)
     except: pass
     return chart_data
 
-def extract_return_data(text):
-    return None
-
-# --- 6. AGENT ENGINE (With Retries) ---
+# --- 6. AGENT ENGINE ---
 async def run_agent(name, prompt, content):
     await asyncio.sleep(random.uniform(0.5, 2.0))
-    
-    # Retry Loop (3 attempts)
+    # Retry Loop (3 Attempts per agent)
     for attempt in range(3):
         for model_name in MODELS:
             try:
@@ -500,10 +466,10 @@ async def run_agent(name, prompt, content):
                     model=model_name,
                     contents=f"{prompt}\nCONTEXT: {content}",
                     config=types.GenerateContentConfig(temperature=0.2, safety_settings=[
-                        types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),
-                        types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"),
-                        types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_NONE"),
-                        types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE")
+                        types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_ONLY_HIGH"),
+                        types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_ONLY_HIGH"),
+                        types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_ONLY_HIGH"),
+                        types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_ONLY_HIGH")
                     ])
                 )
                 if response.text: return name, response.text
@@ -513,22 +479,21 @@ async def run_agent(name, prompt, content):
                     await asyncio.sleep(10 * (attempt + 1))
                 else:
                     await asyncio.sleep(5)
-                continue # Retry loop
-                
+                continue 
+
     return name, f"Analysis Failed for {name}. Error: {error_msg}"
 
 async def run_analysis(user_input):
     market_data = fetch_market_data(user_input)
     is_ticker = market_data["is_valid_ticker"]
     
+    current_price = market_data["price"]
+    current_yield = market_data["yield"]
+    
     if is_ticker:
         subject = normalize_ticker(user_input)
-        current_price = market_data["price"]
-        current_yield = market_data["yield"]
     else:
         subject = user_input
-        current_price = None
-        current_yield = market_data["yield"]
         
     prompts = get_dynamic_prompts(subject, current_price, current_yield, is_ticker)
     
@@ -544,13 +509,13 @@ async def run_analysis(user_input):
     if any("Analysis Failed" in str(v) for v in data.values()): return data
 
     st.toast("⏳ Cooling down quota for Red Team analysis...")
-    await asyncio.sleep(8)
+    await asyncio.sleep(5)
     
-    combined_reports = "\n".join([v for k,v in data.items()])
+    combined_reports = "\n".join([v for k,v in data.items() if not k.startswith("_")])
     _, data["Red Team"] = await run_agent("Red Team", prompts["RED_TEAM"], combined_reports)
     
     st.toast("⏳ Cooling down quota for Final Thesis...")
-    await asyncio.sleep(8)
+    await asyncio.sleep(5)
     
     combined_reports += f"\n\nRED TEAM VERDICT:\n{data['Red Team']}"
     _, data["Portfolio Manager"] = await run_agent("Portfolio Manager", prompts["PORTFOLIO"], combined_reports)
