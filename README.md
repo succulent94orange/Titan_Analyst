@@ -1,84 +1,88 @@
-================================================================================
-                                 TITAN ANALYST
-================================================================================
+Titan_Analyst 🤖📊
 
-Version: 1.0.0
-Author: succulent94orange
-Repository: https://github.com/succulent94orange/Titan_Analyst
+Titan_Analyst is an intelligent AI agent designed to automate complex analysis tasks. Built to act as a virtual analyst, this agent leverages large language models (LLMs) to ingest data, reason through problems, and generate actionable insights or reports.
+🚀 Features
 
---------------------------------------------------------------------------------
-1. INTRODUCTION
---------------------------------------------------------------------------------
-Titan Analyst is a [insert description, e.g., data analysis tool / financial modeling script / cybersecurity log parser] designed to [insert main goal, e.g., automate the processing of large datasets and generate actionable insights]. 
+    Autonomous Analysis: Capable of breaking down broad user queries into execution steps.
 
-Key Features:
-- [Feature 1: e.g., Automated data cleaning and normalization]
-- [Feature 2: e.g., Real-time visualization of key metrics]
-- [Feature 3: e.g., Export capabilities to CSV, JSON, and PDF]
+    Data Interpretation: Can process structured (CSV, JSON) and unstructured data.
 
---------------------------------------------------------------------------------
-2. PREREQUISITES
---------------------------------------------------------------------------------
-Before running Titan Analyst, ensure you have the following installed:
+    Report Generation: Automatically generates summaries and detailed reports based on findings.
 
-- Operating System: Windows, macOS, or Linux
-- Language/Runtime: [e.g., Python 3.8+, Node.js 14+]
-- Dependencies:
-  [List major libraries, e.g., pandas, numpy, requests]
+    Tool Integration: (Optional - Update based on your code) Includes support for web searching, API calls, or local file manipulation.
 
---------------------------------------------------------------------------------
-3. INSTALLATION
---------------------------------------------------------------------------------
-1. Clone the repository:
-   git clone https://github.com/succulent94orange/Titan_Analyst.git
+🛠️ Installation
 
-2. Navigate to the project directory:
-   cd Titan_Analyst
+    Clone the repository
+    Bash
 
-3. Install required packages:
-   [e.g., pip install -r requirements.txt]
-   OR
-   [e.g., npm install]
+git clone https://github.com/succulent94orange/Titan_Analyst.git
+cd Titan_Analyst
 
---------------------------------------------------------------------------------
-4. CONFIGURATION
---------------------------------------------------------------------------------
-Edit the `config.json` (or `.env` file) to set up your environment variables:
+Set up a virtual environment (Recommended)
+Bash
 
-- API_KEY: [Insert instruction on where to get keys]
-- INPUT_DIR: Path to your input data
-- OUTPUT_DIR: Path where results will be saved
+python -m venv venv
+source venv/bin/activate  # On Windows use `venv\Scripts\activate`
 
---------------------------------------------------------------------------------
-5. USAGE
---------------------------------------------------------------------------------
-To start the analysis:
+Install dependencies
+Bash
 
-   [e.g., python main.py --input data.csv]
+    pip install -r requirements.txt
 
-Command Line Arguments:
---help        Show this help message and exit
---verbose     Enable detailed logging
---mode        Select analysis mode (fast, deep, comprehensive)
+⚙️ Configuration
 
---------------------------------------------------------------------------------
-6. FILE STRUCTURE
---------------------------------------------------------------------------------
+Create a .env file in the root directory to store your API keys and configuration settings.
+Bash
+
+# .env example
+OPENAI_API_KEY=your_openai_api_key_here
+# ANTHROPIC_API_KEY=your_anthropic_key_here
+# DATA_SOURCE_URL=https://api.example.com/data
+
+🏃 Usage
+
+To start the agent, run the main script from your terminal:
+Bash
+
+python main.py
+
+Or, if you have a specific entry point:
+Bash
+
+python app.py
+
+Example Query
+
+    "Analyze the sales data from Q3 and identify the top three underperforming regions."
+
+📂 Project Structure
+Plaintext
+
 Titan_Analyst/
-├── data/               # Input datasets
-├── src/                # Source code
-│   ├── modules/        # Helper functions and classes
-│   └── main.py         # Entry point
-├── tests/              # Unit tests
-├── requirements.txt    # Dependency list
-└── readme.txt          # This file
+├── data/               # Input data files
+├── src/                # Source code for the agent
+│   ├── agent.py        # Core agent logic
+│   ├── tools.py        # Tools and extensions
+│   └── utils.py        # Helper functions
+├── main.py             # Entry point
+├── requirements.txt    # Python dependencies
+└── README.md           # Project documentation
 
---------------------------------------------------------------------------------
-7. LICENSE
---------------------------------------------------------------------------------
-This project is licensed under the [e.g., MIT License]. See the LICENSE file for details.
+🤝 Contributing
 
---------------------------------------------------------------------------------
-8. CONTACT
---------------------------------------------------------------------------------
-For bugs, questions, or contributions, please open an issue on the GitHub repository.
+Contributions are welcome! Please fork the repository and create a pull request with your features or fixes.
+
+    Fork the Project
+
+    Create your Feature Branch (git checkout -b feature/AmazingFeature)
+
+    Commit your Changes (git commit -m 'Add some AmazingFeature')
+
+    Push to the Branch (git push origin feature/AmazingFeature)
+
+    Open a Pull Request
+
+📄 License
+
+Distributed under the MIT License. See LICENSE for more information.
