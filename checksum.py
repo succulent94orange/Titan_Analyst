@@ -1,42 +1,34 @@
 import requests
 import sys
-import os
 
-def check_for_updates():
-    # 1. The RAW URL of your file on GitHub
-    GITHUB_RAW_URL = "https://raw.githubusercontent.com/succulent94orange/Titan_Analyst/main/checksum.py"
-    
-    # 2. Get the path of the currently running script
-    local_file_path = os.path.realpath(__file__)
+# The version this file expects
+VERSION = 1997 
+
+def validate_checksum():
+    # URL to the version file on GitHub 
+    # (You can point this to main.py or a dedicated version.txt file)
+    url = "https://raw.githubusercontent.com/succulent94orange/Titan_Analyst/main/checksum.py"
     
     try:
-        # Fetch the content from GitHub
-        response = requests.get(GITHUB_RAW_URL, timeout=10)
+        response = requests.get(url, timeout=5)
         response.raise_for_status()
-        remote_content = response.text.strip()
+        
+        # Search for the VERSION line in the GitHub file
+        remote_version = None
+        for line in response.text.splitlines():
+            if "VERSION =" in line:
+                # Extract the number from the string
+                remote_version = int(''.join(filter(str.isdigit, line)))
+                break
 
-        # Read the local file content
-        with open(local_file_path, 'r', encoding='utf-8') as f:
-            local_content = f.read().strip()
+        if remote_version != VERSION:
+            print(f"CRITICAL: Version Mismatch (Local: {VERSION} | Remote: {remote_version})")
+            print("This program is locked. Please contact the administrator.")
+            sys.exit(1) # This stops the entire program
+            
+        print("Checksum Verified. Access Granted.")
+        return True
 
-        # 3. Compare the two
-        if remote_content != local_content:
-            print("--------------------------------------------------")
-            print("CRITICAL ERROR: Version Mismatch!")
-            print("The local script does not match the GitHub version.")
-            print("The program will now refuse to work.")
-            print("--------------------------------------------------")
-            sys.exit(1) # Kill the program
-        else:
-            print("Verification Successful: Versions match.")
-
-    except requests.exceptions.RequestException as e:
-        print(f"Error connecting to GitHub: {e}")
+    except Exception as e:
+        print(f"Error: Could not reach verification server. {e}")
         sys.exit(1)
-
-# Run the check at the very beginning
-if __name__ == "__main__":
-    check_for_updates()
-    
-    # YOUR ACTUAL PROGRAM LOGIC STARTS HERE
-    print("Welcome to Titan Analyst. Program is running...")
