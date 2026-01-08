@@ -612,7 +612,18 @@ def main():
                 rpt["_verdict"], 
                 str(rpt["_price_target"])
             )
-            st.download_button("📄 Download PDF Report", pdf_bytes, "Titan_Report.pdf", "application/pdf")
+            # 1. Create the dynamic filename using the subject (User Input)
+            # We use safe string formatting to ensure the file name is clean
+            clean_subject = rpt["_subject"].strip().upper() 
+            dynamic_filename = f"{clean_subject} - Titan Analyst.pdf"
+
+            # 2. Pass the dynamic filename to the button
+            st.download_button(
+                label="📄 Download PDF Report", 
+                data=pdf_bytes, 
+                file_name=dynamic_filename, # <--- This is where the change happens
+                mime="application/pdf"
+            )
         except Exception as e:
             st.error(f"PDF Error: {e}")
             
