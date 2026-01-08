@@ -1,3 +1,31 @@
+import requests
+import hashlib
+import sys
+
+HIDDEN_KEY = "67116e031024e38e146c9c61284d748f220376e109d941865c19d7d43f07a0e3"
+
+def validate_access():
+    # We use the RAW URL to ensure we get the code, not the GitHub website HTML
+    url = "https://raw.githubusercontent.com/succulent94orange/Titan_Analyst/main/checksum.py"
+    
+    try:
+        # Add a cache-buster (?v=...) to ensure we get the latest version from GitHub
+        response = requests.get(url + "?v=1", timeout=5)
+        response.raise_for_status()
+        
+        # Check if our hidden hash exists in the GitHub version of this file
+        if HIDDEN_KEY not in response.text:
+            print("\n[!] SECURITY ALERT: Version mismatch or unauthorized modification.")
+            print("[!] This program will now refuse to run.\n")
+            sys.exit(1)
+            
+        print("[+] Checksum Verified. Access Granted.")
+        return True
+
+    except Exception as e:
+        print(f"[!] Connection Error: Could not reach authentication server.")
+        sys.exit(1)
+
 import streamlit as st
 from google import genai
 from google.genai import types
