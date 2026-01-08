@@ -551,6 +551,22 @@ async def run_analysis(user_input):
 # --- 7. UI MAIN ---
 def main():
     st.set_page_config(page_title="Titan 2.5", layout="wide")
+    
+    # --- NEW CSS INJECTION STARTS HERE ---
+    st.markdown("""
+        <style>
+        div.stMarkdown table {
+            width: 100%; border-collapse: collapse; border-radius: 10px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        div.stMarkdown thead tr th {
+            background-color: #0A1932; color: #FFFFFF; text-align: center; padding: 15px; border-bottom: 3px solid #DAA520;
+        }
+        div.stMarkdown tbody tr:nth-of-type(odd) { background-color: #ffffff; }
+        div.stMarkdown tbody tr:nth-of-type(even) { background-color: #f0f2f6; }
+        div.stMarkdown tbody tr td { padding: 12px 15px; text-align: center; border-bottom: 1px solid #ddd; color: #333; }
+        </style>
+    """, unsafe_allow_html=True)
+    
     st.title("⚡ Titan Analyst 2.5")
     
     if "report" not in st.session_state: st.session_state.report = None
