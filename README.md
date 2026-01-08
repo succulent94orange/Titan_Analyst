@@ -36,9 +36,7 @@ Create a .env file in the root directory to store your API keys and configuratio
 Bash
 
 # .env example
-OPENAI_API_KEY=your_openai_api_key_here
-# ANTHROPIC_API_KEY=your_anthropic_key_here
-# DATA_SOURCE_URL=https://api.example.com/data
+GOOGLE_API_KEY="Your_API_Key"
 
 🏃 Usage
 
