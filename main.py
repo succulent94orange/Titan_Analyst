@@ -38,7 +38,7 @@ MODELS = ["gemini-3-pro-preview"]
 HIDDEN_KEY = "67116e031024e38e146c9c61284d748f220376e109d941865c19d7d43f07a0e3"
 
 def validate_access():
-    url = "https://raw.githubusercontent.com/succulent94orange/Titan_Analyst/main/checksum.py"
+    url = "https://github.com/succulent94orange/AI-Agent-Version-Check/blob/main/chechsum.py"
     try:
         response = requests.get(url + "?v=1", timeout=5)
         response.raise_for_status()
